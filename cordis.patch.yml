@@ -1,0 +1,12 @@
+# DSH 树外 bundle 声明:dsh plugin add 时 DSH 把本行合入 profile 的 bundle 栈。
+# 字段说明见 README「配置」——baseUrl/apiKey 留空时自动继承 ~/.exomind/config.json
+# 与环境变量,与 exomind-cli 共享同一份登录凭据。
+- insert:
+    - id: exomind-flywheel
+      name: dsh-exomind/dist/index.js
+      config:
+        baseUrl: ""
+        apiKey: ""
+        searchTimeoutMs: 15000
+        queryTimeoutMs: 180000
+        maxResultChars: 6000
