@@ -1,6 +1,6 @@
 {
   "name": "dsh-exomind",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "ExoMind knowledge flywheel tools (search / entity / query) for DeepSeek Harness.",
   "type": "module",
   "main": "dist/index.js",
