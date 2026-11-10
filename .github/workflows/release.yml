@@ -43,11 +43,11 @@ jobs:
       - name: 发布产物形状预检(npm pack --dry-run)
         run: npm pack --dry-run
       - name: 发布到 npm
-        if: ${{ github.event_name == "push" && !inputs.dry_run }}
+        if: ${{ github.event_name == 'push' && !inputs.dry_run }}
         run: npm publish --provenance
       # 观测不闸门:registry 传播延迟不该把成功的发布打成失败(轮询带随机 query 绕 CDN 负缓存)
       - name: registry 可见性复核
-        if: ${{ github.event_name == "push" && !inputs.dry_run }}
+        if: ${{ github.event_name == 'push' && !inputs.dry_run }}
         run: |
           V=$(npm pkg get version | tr -d '"')
           code=000
