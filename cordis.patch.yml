@@ -10,3 +10,7 @@
         searchTimeoutMs: 15000
         queryTimeoutMs: 180000
         maxResultChars: 6000
+        recallEnabled: true
+        recallTimeoutMs: 2000
+        recallLimit: 3
+        recallMaxChars: 3000

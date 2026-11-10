@@ -34,6 +34,17 @@ dsh --profile <你的profile> --dump-config   # 应看到 id: exomind-flywheel �
 
 即:装好 exomind-cli 并 `exomind login` 后,本插件零配置可用;换 key 也只需 `exomind login`,无需重启 DSH(每次工具调用时解析凭据)。
 
+## 自动召回(v0.2.0+)
+
+每条**直接用户消息**进入 agent 前,插件自动做一次有界 BM25 检索,把命中包进 `<exomind_context>` 注入到该消息之后。设计要点(对齐 MemOS DSH adapter 的前台契约):
+
+- **只走 BM25**(实测 rt≈0.3s),不用 hybrid——DSH 前台硬上限 3 秒不可配置突破,超时配置只能更短;
+- **同一逻辑 turn 去重**:工具循环的多次 pre-step 只召回一次;插件/工具消息不触发(防递归);
+- **全链路 fail-open**:检索失败/超时/未登录/无候选 → 不注入,绝不阻塞宿主;
+- 注入内容标注为**历史参考数据而非指令**,防提示注入。
+
+不想要自动召回?`recallEnabled: false` 或 `dsh plugin remove`。
+
 ## 配置
 
 在 `$DSH_HOME/profiles/<profile>/cordis.patch.yml` 放同 id 行覆盖(DSH patch 是整行替换,保留全部字段):
@@ -46,6 +57,10 @@ dsh --profile <你的profile> --dump-config   # 应看到 id: exomind-flywheel �
     searchTimeoutMs: 15000
     queryTimeoutMs: 180000
     maxResultChars: 6000
+    recallEnabled: true
+    recallTimeoutMs: 2000 # 前台硬上限 3000,只能更短
+    recallLimit: 3
+    recallMaxChars: 3000
 ```
 
 ## 卸载
@@ -58,9 +73,9 @@ dsh plugin --profile <你的profile> remove dsh-exomind
 
 ## 路线图
 
-- **Phase 1(当前)**:三个只读工具。
-- **Phase 2**:自动召回——`agent/pre-step` 每轮注入一次检索结果(受 DSH 前台 3 秒 SLA 约束,只走亚秒级 search)。
-- **Phase 3**:后台沉淀——会话结束异步写入知识飞轮。
+- ✅ Phase 1:三个只读工具(v0.1.0)。
+- ✅ Phase 2:自动召回——`agent/pre-step` 有界 BM25 注入,3 秒 SLA + fail-open(v0.2.0)。
+- Phase 3:后台沉淀——会话结束异步写入知识飞轮。
 
 ## 开发
 
