@@ -6,6 +6,7 @@ import { createUserMessage } from "@deepseek-ai/dsh-llm";
 import Schema from "@deepseek-ai/schemastery";
 
 import { ExoMindClient } from "./api.js";
+import { registerCapture } from "./capture.js";
 import { resolveTarget } from "./config.js";
 import { exomindMessageSource } from "./message-source.js";
 import { directUserQuery, recallTimeoutMs, renderRecallText, TurnRecallGate } from "./recall.js";
@@ -24,6 +25,10 @@ export interface Config {
   recallTimeoutMs: number;
   recallLimit: number;
   recallMaxChars: number;
+  captureEnabled: boolean;
+  captureMinUserChars: number;
+  captureMinAssistantChars: number;
+  captureMaxChars: number;
 }
 
 export const Config: Schema<Config> = Schema.object({
@@ -43,6 +48,15 @@ export const Config: Schema<Config> = Schema.object({
     .description("自动召回超时(ms);前台硬上限 3000,只能更短"),
   recallLimit: Schema.number().step(1).min(1).max(10).default(3).description("自动召回候选数"),
   recallMaxChars: Schema.number().min(200).default(3_000).description("注入上下文长度上限(字符)"),
+  captureEnabled: Schema.boolean()
+    .default(true)
+    .description("会话结束自动把任务与结论沉淀进知识飞轮(异步,幂等)"),
+  captureMinUserChars: Schema.number().min(1).default(8).description("沉淀门槛:用户消息最少字符数"),
+  captureMinAssistantChars: Schema.number()
+    .min(1)
+    .default(100)
+    .description("沉淀门槛:助手结论最少字符数"),
+  captureMaxChars: Schema.number().min(500).default(8_000).description("存档正文长度上限(字符)"),
 });
 
 interface RecallHit {
@@ -98,14 +112,19 @@ export function registerRecall(
   });
 }
 
-/** Cordis 4 契约:apply 的返回值即 disposer(fiber 释放时调用)。 */
-export function apply(ctx: Context, config: Config): () => void {
+/** Cordis 4 契约:apply 的返回值即 disposer(可为 promise,fiber 释放时等待)。
+ *  沉淀管线的 drain 在 dispose 时有界等待在途提交(headless 退出窗口内完成秒回)。 */
+export function apply(ctx: Context, config: Config): () => Promise<void> {
   const disposers: Array<() => void> = [];
   if (config.recallEnabled) {
     disposers.push(registerRecall(ctx, { ...config }));
   }
   disposers.push(registerExomindTools(ctx, config));
-  return () => {
+  const drain = config.captureEnabled
+    ? registerCapture(ctx, { ...config })
+    : async (): Promise<void> => undefined;
+  return async (): Promise<void> => {
     for (const dispose of disposers.splice(0)) dispose();
+    await drain();
   };
 }

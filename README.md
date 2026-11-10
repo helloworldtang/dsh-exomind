@@ -61,7 +61,21 @@ dsh --profile <你的profile> --dump-config   # 应看到 id: exomind-flywheel �
     recallTimeoutMs: 2000 # 前台硬上限 3000,只能更短
     recallLimit: 3
     recallMaxChars: 3000
+    captureEnabled: true
+    captureMinUserChars: 8
+    captureMinAssistantChars: 100
+    captureMaxChars: 8000
 ```
+
+## 会话自动沉淀(v0.3.0+)
+
+会话结束(`session/disposed`)时,若会话足够有料(用户消息与助手结论都过质量门槛,寒暄/空转不存),自动把「任务 + 用户消息 + 助手结论」整理成一条存档,经 `/ingest/async` 秒回提交到知识飞轮,服务端后台异步抽取(1-3 分钟)——闭环:上一场会话的沉淀,成为下一场会话的自动召回。
+
+- 提交带 `client_key` 幂等(内容哈希派生),重试/重投不产生重复;
+- 插件退出窗口内有界等待提交完成;提交失败只丢弃本条,不影响宿主;
+- 存档标签 `dsh` + `会话存档`,标题形如「DSH 会话:<任务>」。
+
+不想要自动沉淀:`captureEnabled: false`。
 
 ## 卸载
 
@@ -75,7 +89,7 @@ dsh plugin --profile <你的profile> remove dsh-exomind
 
 - ✅ Phase 1:三个只读工具(v0.1.0)。
 - ✅ Phase 2:自动召回——`agent/pre-step` 有界 BM25 注入,3 秒 SLA + fail-open(v0.2.0)。
-- Phase 3:后台沉淀——会话结束异步写入知识飞轮。
+- ✅ Phase 3:会话沉淀——`session/disposed` 质量门槛 + `/ingest/async` 幂等提交(v0.3.0)。
 
 ## 开发
 

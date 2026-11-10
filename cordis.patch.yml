@@ -14,3 +14,7 @@
         recallTimeoutMs: 2000
         recallLimit: 3
         recallMaxChars: 3000
+        captureEnabled: true
+        captureMinUserChars: 8
+        captureMinAssistantChars: 100
+        captureMaxChars: 8000
