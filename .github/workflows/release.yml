@@ -44,7 +44,7 @@ jobs:
         run: npm pack --dry-run
       - name: 发布到 npm
         if: ${{ github.event_name == 'push' && !inputs.dry_run }}
-        run: npm publish --provenance
+        run: npm publish --provenance --access public
       # 观测不闸门:registry 传播延迟不该把成功的发布打成失败(轮询带随机 query 绕 CDN 负缓存)
       - name: registry 可见性复核
         if: ${{ github.event_name == 'push' && !inputs.dry_run }}
