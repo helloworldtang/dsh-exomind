@@ -1,0 +1,80 @@
+name: Release
+
+# 推 v* tag → 自动构建 + 发布到 npm(trusted publishing,无 token)。
+# 用法: 改代码 → 质量门全绿 → commit → bump 版本 → tag v* → push tag。
+#
+# 安全试跑: Actions 页面 dispatch 本工作流并勾 dry_run —— 只跑质量门与构建,不发布。
+# 成功信号: Step Summary 打出版本与包页面 + registry 复核步可见 200。
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "只跑质量门与构建,不发布(验证工作流用)"
+        type: boolean
+        default: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write # npm provenance(供应链溯源,trusted publishing 必需)
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+          cache: npm
+      # trusted publishing 需 npm ≥ 11.5.1(Node 24 自带小版本不保证),升级一步兜底
+      - run: npm install -g npm@latest
+      - run: npm ci
+      - name: 质量门
+        run: npm run typecheck && npm run build && npm test && npm run lint
+      - name: tag ↔ 版本一致
+        run: |
+          V=$(npm pkg get version | tr -d '"')
+          if [ "v$V" != "${GITHUB_REF_NAME}" ]; then
+            echo "tag ${GITHUB_REF_NAME} ≠ 包版本 v$V — 先 bump package.json 再打 tag"
+            exit 1
+          fi
+      - name: 发布产物形状预检(npm pack --dry-run)
+        run: npm pack --dry-run
+      - name: 发布到 npm
+        if: ${{ github.event_name == "push" && !inputs.dry_run }}
+        run: npm publish --provenance
+      # 观测不闸门:registry 传播延迟不该把成功的发布打成失败(轮询带随机 query 绕 CDN 负缓存)
+      - name: registry 可见性复核
+        if: ${{ github.event_name == "push" && !inputs.dry_run }}
+        run: |
+          V=$(npm pkg get version | tr -d '"')
+          code=000
+          for i in $(seq 1 30); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' "https://registry.npmjs.org/dsh-exomind/$V?t=$RANDOM$RANDOM")
+            if [ "$code" = "200" ]; then
+              echo "registry 已可见: dsh-exomind@$V(第 $((i*10)) 秒内,HTTP $code)"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "::warning::发布后 5 分钟内 registry 未见 dsh-exomind@$V(最后 HTTP $code),请手动 curl https://registry.npmjs.org/dsh-exomind/$V 复核(可能只是传播延迟)"
+      - name: 结果写进 Summary
+        if: always()
+        run: |
+          V=$(npm pkg get version | tr -d '"')
+          {
+            echo "### npm 发布: \`${GITHUB_REF_NAME}\`"
+            echo ""
+            if [ "${{ inputs.dry_run }}" = "true" ]; then
+              echo "> **dry run**: 只跑了质量门与构建,未发布。"
+              echo ""
+            fi
+            echo "| 项 | 值 |"
+            echo "|---|---|"
+            echo "| 包 | \`dsh-exomind\` |"
+            echo "| 仓内版本 | \`$V\` |"
+            echo "| registry 当前版本 | \`$(npm view dsh-exomind version 2>/dev/null || echo '尚未发布/查询失败')\` |"
+            echo "| 包页面 | https://www.npmjs.com/package/dsh-exomind |"
+          } >> "$GITHUB_STEP_SUMMARY"

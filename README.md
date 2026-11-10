@@ -99,6 +99,20 @@ npm run typecheck && npm run build && npm test && npm run lint
 # 本地装进 DSH 试:dsh plugin --profile <profile> add /absolute/path/to/dsh-exomind
 ```
 
+> ⚠️ 开发坑:`dsh plugin add` 每次都会把宿主发现的其他 app bundle(acp/sdk/web 等)
+> 塞进 profile 的 `dsh.profile.bundles`,多 app 争参会让 headless 报
+> "too many arguments"。装完跑 `npm run guard:headless` 修剪(其他 profile 用
+> `node scripts/guard-bundles.mjs --profile <p> --app @deepseek-ai/dsh-<p>`)。
+
+发版:bump `package.json` 版本 → 质量门全绿 → commit → `git tag v*` → push tag,
+GitHub Actions 自动 npm publish(trusted publishing,无 token)。
+
+安装(npm 已发布后):
+
+```bash
+dsh plugin --profile <你的profile> add dsh-exomind@0.3.1
+```
+
 ## License
 
 [MIT](./LICENSE)
