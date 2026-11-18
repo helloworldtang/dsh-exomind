@@ -17,7 +17,7 @@
 > 前置:DSH 0.2.1-rc.2+(preview 阶段 API 在变,本插件按 0.2.1-rc 与 0.2.2-rc 系列验证,`engines.dsh` 已声明,新版 DSH 安装器会做前置检查);Node 22+;已用 `exomind login` 登录过 ExoMind(见下"凭据")。
 
 ```bash
-dsh plugin --profile <你的profile> add github:helloworldtang/dsh-exomind#v0.3.4
+dsh plugin --profile <你的profile> add github:helloworldtang/dsh-exomind#v0.4.0
 dsh --profile <你的profile> --dump-config   # 应看到 id: exomind-flywheel 的 bundle 行
 # 重启该 profile 后生效
 ```
@@ -73,6 +73,8 @@ dsh --profile <你的profile> --dump-config   # 应看到 id: exomind-flywheel �
 
 会话结束(`session/disposed`)时,若会话足够有料(用户消息与助手结论都过质量门槛,寒暄/空转不存),自动把「任务 + 用户消息 + 助手结论」整理成一条存档,经 `/ingest/async` 秒回提交到知识飞轮,服务端后台异步抽取(1-3 分钟)——闭环:上一场会话的沉淀,成为下一场会话的自动召回。
 
+**出站脱敏**(v0.4.0+):提交前对最终出站字节(content + title)做收口扫描,命中结构化密钥形态(sk- 系 key、AWS `AKIA`、GitHub `ghp_`、Slack、Google、JWT、`Bearer` 头、PEM 私钥块)即打码(`sk-a***REDACTED***`,保留 4 字符前缀可辨认、不可还原);命中超 10 处视为密钥清单粘贴,整条放弃上传。打码/放弃各打一行 `exomind-capture` 埋点。插件启用时有一条知情提示说明会上传什么、如何关闭。无结构敏感内容(如 prose 密码)超出正则能力,请自行确认或 `captureEnabled: false`。
+
 - 提交带 `client_key` 幂等(内容哈希派生),重试/重投不产生重复;
 - 插件退出窗口内有界等待提交完成;提交失败只丢弃本条,不影响宿主;
 - 存档标签 `dsh` + `会话存档`,标题形如「DSH 会话:<任务>」。
@@ -112,7 +114,7 @@ GitHub Actions 自动 npm publish(trusted publishing,无 token)。
 安装(npm 已发布后):
 
 ```bash
-dsh plugin --profile <你的profile> add dsh-exomind@0.3.4
+dsh plugin --profile <你的profile> add dsh-exomind@0.4.0
 ```
 
 ## License

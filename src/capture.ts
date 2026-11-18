@@ -9,6 +9,7 @@ import type {} from "@deepseek-ai/dsh-session"; // Events 类型增强:session/e
 
 import { ExoMindClient } from "./api.js";
 import { resolveTarget, type ResolveEnv } from "./config.js";
+import { sanitizeDigest } from "./sanitize.js";
 
 export interface CaptureOptions {
   baseUrl?: string;
@@ -123,6 +124,12 @@ const defaultSleep = (ms: number): Promise<void> => new Promise((r) => setTimeou
 
 /** 注册沉淀管线,返回 drain 函数:等待在途提交(有界),供插件 dispose 时调用。 */
 export function registerCapture(ctx: Context, options: CaptureOptions): () => Promise<void> {
+  const logger = ctx.logger("exomind-capture");
+  // 知情提示(每进程一次):默认上传是产品的命,但用户必须知道传了什么、怎么关
+  logger.info(
+    "ExoMind 会话沉淀已开启:会话结束后将把「任务+用户消息+助手结论」(经结构化密钥脱敏)" +
+      "上传知识飞轮,成为后续会话的自动召回素材;配置 captureEnabled: false 可关闭。",
+  );
   const buffers = new WeakMap<object, CaptureBuffer>();
   const pending: Promise<unknown>[] = [];
   const sleep = options.sleep ?? defaultSleep;
@@ -145,6 +152,12 @@ export function registerCapture(ctx: Context, options: CaptureOptions): () => Pr
         maxChars: options.captureMaxChars,
       });
       if (!digest) return;
+      // 出站收口脱敏:对最终出站的 content+title 做最后一扫,无旁路
+      const sanitized = sanitizeDigest(digest.content, digest.title);
+      if (sanitized.masked > 0) {
+        logger.warn(JSON.stringify({ masked: sanitized.masked, dropped: sanitized.dropped }));
+      }
+      if (sanitized.dropped) return; // 命中过多:视为密钥清单粘贴,整条放弃
       const target = resolveTarget(
         { baseUrl: options.baseUrl, apiKey: options.apiKey },
         options.resolveEnv,
@@ -155,10 +168,10 @@ export function registerCapture(ctx: Context, options: CaptureOptions): () => Pr
         client
           .post("/ingest/async", {
             body: {
-              content: digest.content,
-              title: digest.title,
+              content: sanitized.content,
+              title: sanitized.title,
               tags: ["dsh", "会话存档"],
-              client_key: deriveClientKey(digest.content),
+              client_key: deriveClientKey(sanitized.content),
             },
             timeoutMs: options.submitTimeoutMs ?? 10_000,
           })

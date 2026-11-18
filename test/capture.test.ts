@@ -37,6 +37,29 @@ const CAPTURE_OPTS = {
   captureMaxChars: 8_000,
 };
 
+interface CapLogEntry {
+  level: string;
+  text: string;
+}
+
+function makeCaptureCtx(): {
+  ctx: unknown;
+  listeners: Map<string, (...args: unknown[]) => void>;
+  logs: CapLogEntry[];
+} {
+  const listeners = new Map<string, (...args: unknown[]) => void>();
+  const logs: CapLogEntry[] = [];
+  const on = (name: string, fn: (...args: unknown[]) => void): (() => void) => {
+    listeners.set(name, fn);
+    return () => listeners.delete(name);
+  };
+  const logger = (): { info: (t: string) => void; warn: (t: string) => void } => ({
+    info: (text) => logs.push({ level: "info", text }),
+    warn: (text) => logs.push({ level: "warn", text }),
+  });
+  return { ctx: { on, logger }, listeners, logs };
+}
+
 test("积累过滤:插件召回消息不算用户输入;中断流不进存档", () => {
   const buffer = new CaptureBuffer();
   buffer.onEvent(
@@ -78,12 +101,8 @@ test("session/disposed 触发 /ingest/async 提交;drain 等待完成;提交失�
     bodies.push(init?.body ? JSON.parse(String(init.body)) : null);
     return new Response(JSON.stringify({ job_id: "job-1" }), { status: 200 });
   }) as typeof fetch;
-  const listeners = new Map<string, (...args: unknown[]) => void>();
-  const on = (name: string, fn: (...args: unknown[]) => void): (() => void) => {
-    listeners.set(name, fn);
-    return () => listeners.delete(name);
-  };
-  const drain = registerCapture({ on } as never, {
+  const { ctx, listeners } = makeCaptureCtx();
+  const drain = registerCapture(ctx as never, {
     ...CAPTURE_OPTS,
     baseUrl: "https://api.example.com",
     apiKey: "k-1",
@@ -103,7 +122,7 @@ test("session/disposed 触发 /ingest/async 提交;drain 等待完成;提交失�
   // 失败路径:断网/500 → 提交被吞,drain 正常返回
   const failFetch = (async () =>
     new Response(JSON.stringify({ detail: "down" }), { status: 500 })) as typeof fetch;
-  const drain2 = registerCapture({ on } as never, {
+  const drain2 = registerCapture(ctx as never, {
     ...CAPTURE_OPTS,
     baseUrl: "https://api.example.com",
     apiKey: "k-1",
@@ -122,12 +141,8 @@ test("质量门槛外的会话不触发提交", async () => {
     bodies.push(init?.body);
     return new Response("{}", { status: 200 });
   }) as typeof fetch;
-  const listeners = new Map<string, (...args: unknown[]) => void>();
-  const on = (name: string, fn: (...args: unknown[]) => void): (() => void) => {
-    listeners.set(name, fn);
-    return () => listeners.delete(name);
-  };
-  registerCapture({ on } as never, {
+  const { ctx, listeners } = makeCaptureCtx();
+  registerCapture(ctx as never, {
     ...CAPTURE_OPTS,
     baseUrl: "https://api.example.com",
     apiKey: "k-1",
@@ -151,4 +166,61 @@ test("缓冲有界:超长会话条数封顶(保首条+最近),单条截断,diges
   const digest = buffer.buildDigest(GATE);
   assert.ok(digest);
   assert.match(digest.content, /任务:最初的任务描述/);
+});
+
+test("出站收口脱敏:命中的 secret 打码后才提交,client_key 按打码后内容计算", async () => {
+  const bodies: unknown[] = [];
+  const fetchImpl = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+    bodies.push(init?.body ? JSON.parse(String(init.body)) : null);
+    return new Response("{}", { status: 200 });
+  }) as typeof fetch;
+  const { ctx, listeners, logs } = makeCaptureCtx();
+  const drain = registerCapture(ctx as never, {
+    ...CAPTURE_OPTS,
+    baseUrl: "https://api.example.com",
+    apiKey: "k-1",
+    fetchImpl,
+  });
+  const session = {};
+  listeners.get("session/event")?.(
+    session,
+    userEvent("帮我看下这个 key 为什么 401: sk-abcdef0123456789abcdef0123456789"),
+  );
+  listeners.get("session/event")?.(session, assistantEvent(LONG_ANSWER));
+  listeners.get("session/disposed")?.(session);
+  await drain();
+  assert.equal(bodies.length, 1);
+  const body = bodies[0] as { content: string; client_key: string };
+  assert.match(body.content, /sk-a\*\*\*REDACTED\*\*\*/);
+  assert.doesNotMatch(body.content, /0123456789abcdef0123456789/);
+  assert.equal(body.client_key, deriveClientKey(body.content));
+  const warn = logs.find((l) => l.level === "warn");
+  assert.ok(warn && JSON.parse(warn.text).masked >= 1, "打码埋点一行");
+});
+
+test("出站收口脱敏:命中超阈值整条放弃,不发起提交", async () => {
+  const bodies: unknown[] = [];
+  const fetchImpl = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+    bodies.push(init?.body);
+    return new Response("{}", { status: 200 });
+  }) as typeof fetch;
+  const { ctx, listeners, logs } = makeCaptureCtx();
+  registerCapture(ctx as never, {
+    ...CAPTURE_OPTS,
+    baseUrl: "https://api.example.com",
+    apiKey: "k-1",
+    fetchImpl,
+  });
+  const session = {};
+  listeners.get("session/event")?.(
+    session,
+    userEvent(
+      Array.from({ length: 12 }, (_, i) => `sk-key${i}0123456789abcdef0123456789`).join("\n"),
+    ),
+  );
+  listeners.get("session/event")?.(session, assistantEvent(LONG_ANSWER));
+  listeners.get("session/disposed")?.(session);
+  assert.equal(bodies.length, 0);
+  const warn = logs.find((l) => l.level === "warn" && l.text.includes("dropped"));
+  assert.ok(warn && JSON.parse(warn.text).dropped === true, "放弃埋点一行");
 });
