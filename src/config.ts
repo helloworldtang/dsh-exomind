@@ -1,5 +1,6 @@
 /** 凭据解析:DSH 行配置 > 环境变量 > ~/.exomind/config.json(exomind-cli 共享)> 默认值。 */
 import { readFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 
 export const DEFAULT_BASE_URL = "https://exomind-api.ai-as.cn";
@@ -14,16 +15,26 @@ export interface ExomindFileConfig {
 export interface ResolveEnv {
   env?: Record<string, string | undefined>;
   homeDir?: string;
+  /** 测试注入;生产用 node:os 的 homedir(Windows 下落 USERPROFILE)。 */
+  homedir?: () => string;
 }
 
-/** 读 ~/.exomind/config.json;文件缺失或损坏返回空对象(未登录场景静默降级)。 */
+/** JSON 损坏告警去重:resolveTarget 每次工具调用都会执行,同一路径只警告一次。 */
+const warnedPaths = new Set<string>();
+
+/** 读 ~/.exomind/config.json;文件缺失返回空对象(未登录场景静默降级),
+ *  解析失败(文件存在但 JSON 损坏)打一条警告后降级,不留无声死局。 */
 export function readExomindFileConfig(env: ResolveEnv = {}): ExomindFileConfig {
-  const home = env.homeDir ?? process.env.HOME ?? "";
+  const e = env.env ?? process.env;
+  const home = env.homeDir ?? e.HOME ?? (env.homedir ?? homedir)();
+  const path = join(home, ".exomind", "config.json");
   try {
-    return JSON.parse(
-      readFileSync(join(home, ".exomind", "config.json"), "utf-8"),
-    ) as ExomindFileConfig;
-  } catch {
+    return JSON.parse(readFileSync(path, "utf-8")) as ExomindFileConfig;
+  } catch (e2) {
+    if ((e2 as NodeJS.ErrnoException).code !== "ENOENT" && !warnedPaths.has(path)) {
+      warnedPaths.add(path);
+      console.warn(`[dsh-exomind] ${path} 存在但解析失败,已忽略文件凭据:`, e2);
+    }
     return {};
   }
 }

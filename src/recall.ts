@@ -16,7 +16,7 @@ export function recallTimeoutMs(configuredMs: number): number {
 export function directUserQuery(messages: readonly Message[]): string {
   const texts: string[] = [];
   for (const message of messages) {
-    if (message.source.kind !== "user") continue;
+    if (message.source?.kind !== "user") continue;
     for (const block of message.content) {
       if (block.type === "text" && block.text.trim()) texts.push(block.text.trim());
     }

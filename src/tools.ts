@@ -50,7 +50,10 @@ function clip(text: string, maxChars: number): string {
 function toToolError(e: unknown, what: string): Error {
   if (e instanceof ApiError && e.status === 401) {
     return new Error(
-      `ExoMind 未登录或凭据无效(调用 ${what} 时):运行 \`exomind login\` 写入 ~/.exomind/config.json 后重试。`,
+      `ExoMind 未登录或凭据无效(调用 ${what} 时)。任选其一配置后重试:` +
+        "(1) 运行 `exomind login` 写入 ~/.exomind/config.json;" +
+        "(2) 设置环境变量 EXOMIND_API_KEY;" +
+        "(3) 在本插件的 DSH 行配置中填写 apiKey。",
       { cause: e },
     );
   }

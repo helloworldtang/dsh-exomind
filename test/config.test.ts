@@ -45,3 +45,28 @@ test("环境变量覆盖文件,行配置覆盖环境变量", () => {
   assert.equal(viaRow.apiKey, "k-row");
   rmSync(home, { recursive: true, force: true });
 });
+
+test("HOME 缺失(Windows 场景)回落 os.homedir,凭据仍能读到", () => {
+  const home = tmpHome({ base_url: "https://example.com", api_key: "k-file" });
+  const target = resolveTarget({}, { env: {}, homedir: () => home });
+  assert.equal(target.apiKey, "k-file");
+  rmSync(home, { recursive: true, force: true });
+});
+
+test("文件存在但 JSON 损坏:降级为空并警告,不是无声死局", () => {
+  const home = mkdtempSync(join(tmpdir(), "dsh-exomind-"));
+  mkdirSync(join(home, ".exomind"), { recursive: true });
+  writeFileSync(join(home, ".exomind", "config.json"), "{ not json");
+  const warnings: string[] = [];
+  const originalWarn = console.warn;
+  console.warn = (arg: unknown) => warnings.push(String(arg));
+  try {
+    const target = resolveTarget({}, { env: {}, homeDir: home });
+    assert.equal(target.apiKey, "");
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0] ?? "", /config\.json/);
+  } finally {
+    console.warn = originalWarn;
+    rmSync(home, { recursive: true, force: true });
+  }
+});
