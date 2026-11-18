@@ -70,3 +70,31 @@ test("文件存在但 JSON 损坏:降级为空并警告,不是无声死局", () 
     rmSync(home, { recursive: true, force: true });
   }
 });
+
+test("Git Bash 场景:HOME 是 POSIX 形态且无文件,homedir(对齐 exomind-cli 落盘)生效", () => {
+  const home = tmpHome({ base_url: "https://example.com", api_key: "k-file" });
+  const target = resolveTarget({}, { env: { HOME: "/c/Users/someone" }, homedir: () => home });
+  assert.equal(target.apiKey, "k-file");
+  rmSync(home, { recursive: true, force: true });
+});
+
+test("HOME 兜底:homedir 无文件而 HOME 下手工放置的 config 仍可读到", () => {
+  const empty = tmpHome(); // homedir 候选:无文件
+  const manual = tmpHome({ api_key: "k-manual" }); // HOME 候选:有文件
+  const target = resolveTarget({}, { env: { HOME: manual }, homedir: () => empty });
+  assert.equal(target.apiKey, "k-manual");
+  rmSync(empty, { recursive: true, force: true });
+  rmSync(manual, { recursive: true, force: true });
+});
+
+test("BOM:Windows 记事本保存的 config.json(带 \\uFEFF 前缀)能正常解析", () => {
+  const home = mkdtempSync(join(tmpdir(), "dsh-exomind-"));
+  mkdirSync(join(home, ".exomind"), { recursive: true });
+  writeFileSync(
+    join(home, ".exomind", "config.json"),
+    `\u{FEFF}${JSON.stringify({ api_key: "k-bom" })}`,
+  );
+  const target = resolveTarget({}, { env: {}, homeDir: home });
+  assert.equal(target.apiKey, "k-bom");
+  rmSync(home, { recursive: true, force: true });
+});
