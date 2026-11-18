@@ -11,17 +11,47 @@ export function recallTimeoutMs(configuredMs: number): number {
   return Math.min(MAX_FOREGROUND_RECALL_MS, configuredMs);
 }
 
-/** 从入步消息中提取直接用户文本:只认 source.kind === 'user' 的消息
- *  (插件/工具消息、本插件自身的召回消息都不是,天然防递归),拼接其 text 块。 */
-export function directUserQuery(messages: readonly Message[]): string {
+/** 查询字符窗口:BM25 查询上限,构造侧保证不超,索引侧不再二次截断。 */
+export const MAX_QUERY_CHARS = 200;
+/** 回填回溯上限(条):防御"好/继续"式短消息连发把回填循环拉长。 */
+export const MAX_BACKFILL_MESSAGES = 8;
+/** 回填片段间的标准分隔符:固定不动,保证查询串确定可测。 */
+const SEPARATOR = "\n";
+
+export interface RecallQuery {
+  query: string;
+  /** 实际进入查询的用户消息条数(含当前条),埋点用。 */
+  usedMessages: number;
+}
+
+/** 构造自动召回的 BM25 查询:当下意图优先。
+ *  从最后一条用户消息往前按消息粒度回填,装满窗口为止:
+ *  - 当前(最后一条)消息完整优先;自身超窗时取尾部——中文提问惯例先铺垫后发问,意图在句尾;
+ *  - 历史消息只按整条纳入,装不下整条即停止回填(不做字符级拼装);
+ *  - 最多回溯 MAX_BACKFILL_MESSAGES 条。
+ *  只认 source.kind === 'user' 的消息(工具/插件消息、自身召回消息天然防递归);
+ *  空文本块与全空白消息不产生内容。 */
+export function buildRecallQuery(messages: readonly Message[]): RecallQuery {
   const texts: string[] = [];
   for (const message of messages) {
     if (message.source?.kind !== "user") continue;
-    for (const block of message.content) {
-      if (block.type === "text" && block.text.trim()) texts.push(block.text.trim());
-    }
+    const text = message.content
+      .flatMap((block) => (block.type === "text" && block.text.trim() ? [block.text.trim()] : []))
+      .join(SEPARATOR)
+      .trim();
+    if (text) texts.push(text);
   }
-  return texts.join("\n").trim();
+  const parts: string[] = [];
+  for (let i = texts.length - 1; i >= 0 && texts.length - i <= MAX_BACKFILL_MESSAGES; i--) {
+    let text = texts[i]!;
+    if (parts.length === 0 && text.length > MAX_QUERY_CHARS) {
+      text = text.slice(-MAX_QUERY_CHARS); // 当前消息超窗:取尾部,意图在句尾
+    }
+    const used = parts.reduce((sum, part) => sum + part.length + SEPARATOR.length, 0);
+    if (parts.length > 0 && used + text.length > MAX_QUERY_CHARS) break; // 历史整条装不下
+    parts.unshift(text);
+  }
+  return { query: parts.join(SEPARATOR), usedMessages: parts.length };
 }
 
 /** 召回文本上限内的候选数默认值与渲染。命中为空时返回 null(不注入)。 */

@@ -9,7 +9,7 @@ import { ExoMindClient } from "./api.js";
 import { registerCapture } from "./capture.js";
 import { resolveTarget } from "./config.js";
 import { exomindMessageSource } from "./message-source.js";
-import { directUserQuery, recallTimeoutMs, renderRecallText, TurnRecallGate } from "./recall.js";
+import { buildRecallQuery, recallTimeoutMs, renderRecallText, TurnRecallGate } from "./recall.js";
 import { registerExomindTools, type ToolOptions } from "./tools.js";
 
 export const name = "exomind-flywheel";
@@ -74,19 +74,22 @@ interface RecallOptions extends ToolOptions {
 
 /** agent/pre-step waterfall:先放行默认决策,再在原消息后追加召回消息。
  *  只对含 source.kind==='user' 的步召回(工具循环/插件消息/自身召回消息都不触发),
- *  同一逻辑 turn 去重;任何异常 fail-open 返回原决策。 */
+ *  同一逻辑 turn 去重;任何异常 fail-open 返回原决策。
+ *  每次召回打一行结构化埋点(qChars/msgs/hits/ms/injected),是召回质量后续优化的地基。 */
 export function registerRecall(
   ctx: Context,
   options: RecallOptions,
   gate: TurnRecallGate = new TurnRecallGate(),
 ): () => void {
+  const logger = ctx.logger("exomind-recall");
   return ctx.on("agent/pre-step", async (payload, next) => {
     const decision = await next();
     if (decision.kind !== "enter") return decision;
-    const query = directUserQuery(decision.messages);
-    // query 含自身召回消息(前缀 <exomind_context>)时 directUserQuery 已按 source 排除;
-    // 此处长度门槛挡掉单字符噪声。
+    const { query, usedMessages } = buildRecallQuery(decision.messages);
+    // buildRecallQuery 已按 source 排除自身召回消息;此处长度门槛挡掉单字符噪声。
     if (query.length < 2 || !gate.claim(payload.agent, payload.turn)) return decision;
+    const startedAt = Date.now();
+    const metric = { turn: payload.turn, qChars: query.length, msgs: usedMessages };
     try {
       const target = resolveTarget(
         { baseUrl: options.baseUrl, apiKey: options.apiKey },
@@ -94,20 +97,38 @@ export function registerRecall(
       );
       const client = new ExoMindClient(target.baseUrl, target.apiKey, options.fetchImpl);
       const result = (await client.get("/search", {
-        query: { q: query.slice(0, 200), limit: options.recallLimit },
+        query: { q: query, limit: options.recallLimit },
         timeoutMs: recallTimeoutMs(options.recallTimeoutMs),
         signal: payload.signal,
         retries: 0, // 前台预算内不重试,超时即放弃
       })) as { results?: RecallHit[] };
-      const text = renderRecallText(result.results ?? [], options.recallMaxChars);
+      const hits = result.results ?? [];
+      const text = renderRecallText(hits, options.recallMaxChars);
+      logger.info(
+        JSON.stringify({
+          ...metric,
+          hits: hits.length,
+          ms: Date.now() - startedAt,
+          injected: text !== null,
+        }),
+      );
       if (!text) return decision;
       const recallMessage = createUserMessage({
         content: [{ type: "text", text }],
         source: exomindMessageSource("recall"),
       });
       return { ...decision, messages: [...decision.messages, recallMessage] };
-    } catch {
-      return decision; // fail-open:检索失败/超时/未登录都不阻塞宿主
+    } catch (e) {
+      // fail-open:检索失败/超时/未登录都不阻塞宿主;埋点留痕
+      logger.warn(
+        JSON.stringify({
+          ...metric,
+          ms: Date.now() - startedAt,
+          injected: false,
+          err: e instanceof Error ? e.message.slice(0, 200) : String(e).slice(0, 200),
+        }),
+      );
+      return decision;
     }
   });
 }
