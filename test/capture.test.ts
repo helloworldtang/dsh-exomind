@@ -139,3 +139,16 @@ test("质量门槛外的会话不触发提交", async () => {
   listeners.get("session/disposed")?.(session);
   assert.equal(bodies.length, 0);
 });
+
+test("缓冲有界:超长会话条数封顶(保首条+最近),单条截断,digest 仍可构建", () => {
+  const buffer = new CaptureBuffer();
+  buffer.onEvent(userEvent("最初的任务描述,超过八个字"));
+  for (let i = 0; i < 300; i++) buffer.onEvent(userEvent(`后续第 ${i} 条用户消息,足够长`));
+  buffer.onEvent(assistantEvent("x".repeat(50_000)));
+  assert.equal(buffer.userTexts.length, 100);
+  assert.equal(buffer.userTexts[0], "最初的任务描述,超过八个字"); // 首条=任务标题来源,不丢
+  assert.ok(buffer.assistantTexts[0]!.length <= 8_000); // 单条截断,防长粘贴撑内存
+  const digest = buffer.buildDigest(GATE);
+  assert.ok(digest);
+  assert.match(digest.content, /任务:最初的任务描述/);
+});

@@ -37,6 +37,17 @@ interface MessageLike {
   interrupted?: boolean;
 }
 
+/** 单条消息入库前截断:存档渲染单条最多用 400 字(用户)/合计 maxChars(助手),
+ *  入库即截防超长会话(大量长粘贴)内存无界累积;门槛只看长度下限,截断不影响判断。 */
+const MAX_ENTRY_CHARS = 8_000;
+/** 每侧最多保留条数:首条(任务标题来源)+ 最近若干条,超出的中间旧消息丢弃。 */
+const MAX_ENTRIES = 100;
+
+function pushBounded(texts: string[], text: string): void {
+  texts.push(text.slice(0, MAX_ENTRY_CHARS));
+  if (texts.length > MAX_ENTRIES) texts.splice(1, texts.length - MAX_ENTRIES);
+}
+
 /** 一个会话的积累缓冲。 */
 export class CaptureBuffer {
   userTexts: string[] = [];
@@ -48,7 +59,7 @@ export class CaptureBuffer {
       // 只记直接用户消息:工具结果/插件注入(含本插件召回)不算用户输入
       if (message.source?.kind !== "user") return;
       const text = blocksText(message);
-      if (text) this.userTexts.push(text);
+      if (text) pushBounded(this.userTexts, text);
       return;
     }
     if (event.type === "assistant/message") {
@@ -56,7 +67,7 @@ export class CaptureBuffer {
       // 中断的流是半截输出,不进存档
       if (data?.message?.interrupted) return;
       const text = blocksText(data?.message);
-      if (text) this.assistantTexts.push(text);
+      if (text) pushBounded(this.assistantTexts, text);
     }
   }
 

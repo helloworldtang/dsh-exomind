@@ -33,7 +33,7 @@ export interface RequestOptions {
   timeoutMs?: number;
   /** 外部中止信号(如 DSH 工具执行的 exec.signal)。 */
   signal?: AbortSignal;
-  /** 瞬时错误重试次数,默认 2(读命令幂等,安全可重试)。 */
+  /** 瞬时错误重试次数(仅 get() 生效;post 不重试),默认 2(读命令幂等,安全可重试)。 */
   retries?: number;
 }
 
@@ -131,8 +131,8 @@ export class ExoMindClient {
     }
   }
 
-  /** POST /query 等长操作:默认不重试(LLM 问答非幂等,重试白等一个满超时)。 */
+  /** POST /query 等长操作:不重试(LLM 问答非幂等,重试白等一个满超时)。 */
   post(path: string, opts: RequestOptions = {}): Promise<unknown> {
-    return this.request("POST", path, { ...opts, retries: 0 });
+    return this.request("POST", path, opts);
   }
 }
