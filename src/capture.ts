@@ -10,6 +10,7 @@ import type {} from "@deepseek-ai/dsh-session"; // Events 类型增强:session/e
 import { ExoMindClient } from "./api.js";
 import { resolveTarget, type ResolveEnv } from "./config.js";
 import { sanitizeDigest } from "./sanitize.js";
+import { DSH_ORIGIN } from "./revival.js";
 
 export interface CaptureOptions {
   baseUrl?: string;
@@ -146,6 +147,30 @@ export function registerCapture(ctx: Context, options: CaptureOptions): () => Pr
     ctx.on("session/disposed", (session: object) => {
       const buffer = buffers.get(session);
       if (!buffer) return;
+      const target = resolveTarget(
+        { baseUrl: options.baseUrl, apiKey: options.apiKey },
+        options.resolveEnv,
+      );
+      const client = new ExoMindClient(target.baseUrl, target.apiKey, options.fetchImpl);
+      // 主动建议(飞轮的「驱动下一轮摄入」腿):沉淀提交后顺带取一条选题建议,
+      // 与知情提示同通道输出;失败静默,不打扰退出流程
+      pending.push(
+        client
+          .get("/suggest-topics", { query: { count: 1 }, timeoutMs: 5_000 })
+          .then((result) => {
+            const topic = (
+              result as {
+                topics?: Array<{ topic?: string; reason?: string; unique_angle?: string }>;
+              }
+            )?.topics?.[0];
+            if (!topic?.topic) return;
+            const why = topic.reason ?? topic.unique_angle;
+            logger.info(
+              `ExoMind 建议下一步深挖: ${topic.topic}${why ? ` — ${String(why).slice(0, 120)}` : ""}`,
+            );
+          })
+          .catch(() => undefined),
+      );
       const digest = buffer.buildDigest({
         minUserChars: options.captureMinUserChars,
         minAssistantChars: options.captureMinAssistantChars,
@@ -158,11 +183,6 @@ export function registerCapture(ctx: Context, options: CaptureOptions): () => Pr
         logger.warn(JSON.stringify({ masked: sanitized.masked, dropped: sanitized.dropped }));
       }
       if (sanitized.dropped) return; // 命中过多:视为密钥清单粘贴,整条放弃
-      const target = resolveTarget(
-        { baseUrl: options.baseUrl, apiKey: options.apiKey },
-        options.resolveEnv,
-      );
-      const client = new ExoMindClient(target.baseUrl, target.apiKey, options.fetchImpl);
       // 尽力而为:提交失败(未登录/断网/超时)只丢弃本条,绝不影响宿主
       pending.push(
         client
@@ -171,6 +191,8 @@ export function registerCapture(ctx: Context, options: CaptureOptions): () => Pr
               content: sanitized.content,
               title: sanitized.title,
               tags: ["dsh", "会话存档"],
+              // 服务端 ingest_log 的 log_source:dsh 沉淀页的回查过滤键(复活率数据源)
+              origin: DSH_ORIGIN,
               client_key: deriveClientKey(sanitized.content),
             },
             timeoutMs: options.submitTimeoutMs ?? 10_000,

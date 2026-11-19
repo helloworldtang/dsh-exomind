@@ -1,23 +1,24 @@
 # dsh-exomind
 
-把 [ExoMind 知识飞轮](https://exomind.ai-as.cn)接入 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)(DSH):为 agent 提供三个工具,让它直接检索和问答你的个人知识库——实体图谱、经验沉淀、踩坑记录。
+把 [ExoMind 知识飞轮](https://exomind.ai-as.cn)接入 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)(DSH):为 agent 提供四个工具,让它直接检索和问答你的个人知识库——实体图谱、经验沉淀、踩坑记录。
 
 与本地记忆插件不同,ExoMind 是**服务端知识飞轮**(实体/关系图谱 + FSRS 复习),同一份记忆同时服务 Claude Code(MCP/CLI)、小程序、浏览器插件与本插件,换 harness 不丢记忆。
 
 ## 工具
 
-| 工具             | 用途                                                  | 速度                  |
-| ---------------- | ----------------------------------------------------- | --------------------- |
-| `exomind_search` | 全文/语义检索(BM25,可选 hybrid 向量混合、rerank 精排) | 秒级,优先使用         |
-| `exomind_entity` | 查实体详情:定义、别名、关联实体                       | 秒级                  |
-| `exomind_query`  | 跨多页知识的 LLM 深度问答                             | 慢(1-2 分钟),仅深问题 |
+| 工具              | 用途                                                  | 速度                  |
+| ----------------- | ----------------------------------------------------- | --------------------- |
+| `exomind_search`  | 全文/语义检索(BM25,可选 hybrid 向量混合、rerank 精排) | 秒级,优先使用         |
+| `exomind_entity`  | 查实体详情:定义、别名、关联实体                       | 秒级                  |
+| `exomind_query`   | 跨多页知识的 LLM 深度问答                             | 慢(1-2 分钟),仅深问题 |
+| `exomind_suggest` | 建议下一步深挖主题(图谱密度/盲区/跨域关联)            | 秒级                  |
 
 ## 安装
 
 > 前置:DSH 0.2.1-rc.2+(preview 阶段 API 在变,本插件按 0.2.1-rc 与 0.2.2-rc 系列验证,`engines.dsh` 已声明,新版 DSH 安装器会做前置检查);Node 22+;已用 `exomind login` 登录过 ExoMind(见下"凭据")。
 
 ```bash
-dsh plugin --profile <你的profile> add github:helloworldtang/dsh-exomind#v0.4.0
+dsh plugin --profile <你的profile> add github:helloworldtang/dsh-exomind#v0.5.0
 dsh --profile <你的profile> --dump-config   # 应看到 id: exomind-flywheel 的 bundle 行
 # 重启该 profile 后生效
 ```
@@ -41,7 +42,8 @@ dsh --profile <你的profile> --dump-config   # 应看到 id: exomind-flywheel �
 - **只走 BM25**(实测 rt≈0.3s),不用 hybrid——DSH 前台硬上限 3 秒不可配置突破,超时配置只能更短;
 - **查询按"当下意图优先"构造**:从最后一条用户消息往前按消息粒度回填 200 字符窗口(单条超窗取尾部——中文提问惯例先铺垫后发问);最多回溯 8 条,历史消息装不下整条即停;
 - **同一逻辑 turn 去重**:工具循环的多次 pre-step 只召回一次;插件/工具消息不触发(防递归);
-- **每次召回打一行结构化埋点**(`exomind-recall` logger:qChars/msgs/hits/ms/injected),供召回质量观测;
+- **独立 recall 检索通道**(v0.5.0+):召回请求带 `channel=recall`,服务端不把机器召回写进使用日志(不稀释质量分母),零命中才记缺口(低分命中是召回常态,不过量记账)——召回零命中即「这场会话的主题飞轮里没有」,自动进服务端缺口状态机,`/knowledge-gaps` 可见;
+- **每次召回打一行结构化埋点**(`exomind-recall` logger),字段:`turn/qChars/msgs/hits/ms/injected`,缓存就绪时附 `revived`(命中页里来自本插件此前会话沉淀的数量,见下);skip 路径(短查询/同 turn 去重)每 turn 至多一行 `skipped`;
 - **全链路 fail-open**:检索失败/超时/未登录/无候选 → 不注入,绝不阻塞宿主;
 - 注入内容标注为**历史参考数据而非指令**,防提示注入。
 
@@ -76,10 +78,19 @@ dsh --profile <你的profile> --dump-config   # 应看到 id: exomind-flywheel �
 **出站脱敏**(v0.4.0+):提交前对最终出站字节(content + title)做收口扫描,命中结构化密钥形态(sk- 系 key、AWS `AKIA`、GitHub `ghp_`、Slack、Google、JWT、`Bearer` 头、PEM 私钥块)即打码(`sk-a***REDACTED***`,保留 4 字符前缀可辨认、不可还原);命中超 10 处视为密钥清单粘贴,整条放弃上传。打码/放弃各打一行 `exomind-capture` 埋点。插件启用时有一条知情提示说明会上传什么、如何关闭。无结构敏感内容(如 prose 密码)超出正则能力,请自行确认或 `captureEnabled: false`。
 
 - 提交带 `client_key` 幂等(内容哈希派生),重试/重投不产生重复;
+- 提交带 `origin: dsh-plugin`(v0.5.0+):服务端摄入流水以此区分来源,是复活率统计的过滤键;
 - 插件退出窗口内有界等待提交完成;提交失败只丢弃本条,不影响宿主;
 - 存档标签 `dsh` + `会话存档`,标题形如「DSH 会话:<任务>」。
 
 不想要自动沉淀:`captureEnabled: false`。
+
+## 数据闭环观测(v0.5.0+)
+
+飞轮的后半圈(使用→反馈→驱动下一轮摄入)靠三组埋点转起来,全部输出在 `exomind-recall` / `exomind-capture` logger,可直接从日志统计:
+
+- **采纳信号**:注入后 agent 仍调 `exomind_search/entity/query` → 一行 `{turn, followup:"<工具名>"}`(注入不足/深化信号);turn 结束无跟进 → `{turn, followup:"none"}`。采纳率 = none / (none+工具跟进),是召回择优/降级开关的启动证据。
+- **复活率**:召回埋点的 `revived` 字段 = 命中页与「本插件此前沉淀页」(`/ingest/recent` 中 origin=dsh-plugin 的 created/updated pages)的交集数。「上一场会话的沉淀成为下一场的召回」从此是可观测数字,不再是叙事。命中页集合进程内缓存(TTL 10 分钟),前台召回路径零额外网络等待。
+- **主动建议**:会话结束沉淀时顺带取一条 `/suggest-topics` 选题,以「ExoMind 建议下一步深挖: <主题> — <理由>」输出在 `exomind-capture` 日志,失败静默。agent 也可随时用 `exomind_suggest` 工具主动取。
 
 ## 卸载
 
@@ -94,6 +105,7 @@ dsh plugin --profile <你的profile> remove dsh-exomind
 - ✅ Phase 1:三个只读工具(v0.1.0)。
 - ✅ Phase 2:自动召回——`agent/pre-step` 有界 BM25 注入,3 秒 SLA + fail-open(v0.2.0)。
 - ✅ Phase 3:会话沉淀——`session/disposed` 质量门槛 + `/ingest/async` 幂等提交(v0.3.0)。
+- ✅ Phase 4:数据闭环——召回采纳信号(followup)+ 复活率(revived)+ 独立 recall 缺口通道 + 主动建议(exomind_suggest 与 dispose 日志行)(v0.5.0)。
 
 ## 开发
 
@@ -114,7 +126,7 @@ GitHub Actions 自动 npm publish(trusted publishing,无 token)。
 安装(npm 已发布后):
 
 ```bash
-dsh plugin --profile <你的profile> add dsh-exomind@0.4.0
+dsh plugin --profile <你的profile> add dsh-exomind@0.5.0
 ```
 
 ## License

@@ -111,6 +111,29 @@ function formatEntityResult(entity: unknown, relations: unknown): string {
   return parts.join("\n\n") || "(实体存在,但暂无描述与关系)";
 }
 
+interface SuggestTopic {
+  topic?: string;
+  reason?: string;
+  unique_angle?: string;
+  related?: string[];
+}
+
+function formatSuggestResult(result: unknown): string {
+  const topics = (result as { topics?: SuggestTopic[] })?.topics ?? [];
+  if (!topics.length) return "暂无建议主题(知识飞轮图谱还在积累中)。";
+  const lines = [`知识飞轮建议深挖 ${topics.length} 个主题:`];
+  topics.forEach((t, i) => {
+    let line = `\n${i + 1}. ${t.topic ?? "(未命名)"}`;
+    const why = t.reason ?? t.unique_angle;
+    if (why) line += `\n   为什么: ${String(why).slice(0, 200)}`;
+    if (Array.isArray(t.related) && t.related.length) {
+      line += `\n   相关: ${t.related.slice(0, 8).join("、")}`;
+    }
+    lines.push(line);
+  });
+  return lines.join("");
+}
+
 export function registerExomindTools(ctx: Context, options: ToolOptions): () => void {
   const searchTimeoutMs = options.searchTimeoutMs ?? 15_000;
   const queryTimeoutMs = options.queryTimeoutMs ?? 180_000;
@@ -264,6 +287,35 @@ export function registerExomindTools(ctx: Context, options: ToolOptions): () => 
               };
             } catch (e) {
               throw toToolError(e, "query");
+            }
+          },
+        }),
+      ),
+    );
+    disposers.push(
+      ctx.tools.register(
+        defineTool({
+          name: "exomind_suggest",
+          description:
+            "获取 ExoMind 知识飞轮建议的下一步深挖主题(基于图谱密度/盲区/跨域关联,秒级)。" +
+            "用户问「接下来学什么/写什么」「知识库还缺什么」时调用;选题来自用户自己的知识积累。",
+          parameters: {
+            count: { type: "integer", description: "返回主题数(1-10,默认 5)。" },
+          },
+          output: JSON_OUTPUT,
+          isConcurrencySafe: () => true,
+          async execute(args, exec) {
+            try {
+              const result = await client().get("/suggest-topics", {
+                query: {
+                  count: typeof args.count === "number" ? Math.min(Math.max(args.count, 1), 10) : 5,
+                },
+                timeoutMs: searchTimeoutMs,
+                signal: exec.signal,
+              });
+              return { text: clip(formatSuggestResult(result), maxResultChars) };
+            } catch (e) {
+              throw toToolError(e, "suggest");
             }
           },
         }),

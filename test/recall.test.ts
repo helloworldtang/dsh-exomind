@@ -2,7 +2,9 @@
  *  ②同一逻辑 turn 去重 ③检索失败/超时 fail-open 不改决策 ④deadline 封顶 3000
  *  ⑤注入消息排在原消息后,带 <exomind_context> 与不可信声明
  *  ⑥查询构造:当下意图优先(尾部填充/超窗取尾/回溯上限/空消息过滤)
- *  ⑦每次召回一行结构化埋点,成功与失败都留痕。 */
+ *  ⑦每次召回一行结构化埋点,成功与失败都留痕
+ *  ⑧检索走独立 recall 通道;skip 路径(短查询/去重)每 turn 至多一行埋点
+ *  ⑨复活率:命中页与 dsh 沉淀页(origin=dsh-plugin)交集计入 revived。 */
 import assert from "node:assert/strict";
 import test from "node:test";
 
@@ -119,9 +121,9 @@ test("直接用户消息触发召回,注入 <exomind_context> 且排在原消息
 
 test("tool/plugin/召回消息不触发;同 turn 第二次 pre-step 去重", async () => {
   const { ctx, listeners } = fakeCtx();
-  let calls = 0;
-  const counting: typeof fetch = (async () => {
-    calls++;
+  const urls: string[] = [];
+  const counting: typeof fetch = (async (input: RequestInfo | URL) => {
+    urls.push(String(input));
     return searchOk();
   }) as typeof fetch;
   registerRecall(ctx as never, opts(counting));
@@ -133,7 +135,34 @@ test("tool/plugin/召回消息不触发;同 turn 第二次 pre-step 去重", asy
   assert.equal(first.messages.length, 2);
   const second = await runPreStep(listeners, [userMsg("问一问")], 7); // 同 turn 工具循环再入
   assert.equal(second.messages.length, 1); // 去重:不重复注入
-  assert.equal(calls, 1); // 只发了一次检索
+  // 只发了一次 /search(复活率的 /ingest/recent 后台预热不算检索)
+  assert.equal(urls.filter((u) => u.includes("/search")).length, 1);
+});
+
+test("召回检索走独立 recall 通道;skip 路径每 turn 至多一行埋点", async () => {
+  const { ctx, listeners, logs } = fakeCtx();
+  const urls: string[] = [];
+  const fetchImpl: typeof fetch = (async (input: RequestInfo | URL) => {
+    urls.push(String(input));
+    return searchOk();
+  }) as typeof fetch;
+  registerRecall(ctx as never, opts(fetchImpl));
+  await runPreStep(listeners, [userMsg("问一个完整问题")], 3);
+  // 机器召回声明 recall 通道:服务端不写 usage_log、零命中才记缺口
+  const searchUrl = urls.find((u) => u.includes("/search"));
+  assert.ok(searchUrl?.includes("channel=recall"), `channel 参数透传: ${searchUrl}`);
+  // 短查询:两次 pre-step(模拟工具循环再入)只打一行 skipped
+  await runPreStep(listeners, [userMsg("短")], 4);
+  await runPreStep(listeners, [userMsg("短")], 4);
+  // 同 turn 去重:再入的 dedup skip 也只打一行(与 short-query 共用 per-turn 去重)
+  await runPreStep(listeners, [userMsg("这是一次正常长度的提问")], 5);
+  await runPreStep(listeners, [userMsg("这是一次正常长度的提问")], 5);
+  const skips = logs.filter((l) => l.text.includes("skipped"));
+  assert.equal(skips.length, 2); // short-query 一行 + dedup 一行
+  const parsed = JSON.parse(skips[0]!.text) as { turn: number; skipped: string };
+  assert.equal(parsed.skipped, "short-query");
+  assert.equal(parsed.turn, 4);
+  assert.equal((JSON.parse(skips[1]!.text) as { skipped: string }).skipped, "dedup");
 });
 
 test("检索失败 fail-open:决策原样返回,不注入不抛错", async () => {
@@ -229,4 +258,47 @@ test("埋点:成功召回打一行 info(warn) 结构化日志,字段齐全", asy
   const parsed2 = JSON.parse(warn!.text) as Record<string, unknown>;
   assert.equal(parsed2.injected, false);
   assert.ok(typeof parsed2.err === "string" && parsed2.err);
+});
+
+test("复活率:命中页与 dsh 沉淀页交集计入 revived;缓存未就绪时省略字段", async () => {
+  const { ctx, listeners, logs } = fakeCtx();
+  const fetchImpl: typeof fetch = (async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url.includes("/ingest/recent")) {
+      return new Response(
+        JSON.stringify({
+          items: [
+            {
+              source: "dsh-plugin",
+              created_pages: ["summaries/dsh-会话-x.md"],
+              updated_pages: ["entities/foo.md"],
+            },
+            { source: "hook-auto", created_pages: ["summaries/别家的.md"] },
+          ],
+        }),
+        { status: 200 },
+      );
+    }
+    return new Response(
+      JSON.stringify({
+        results: [
+          { title: "旧沉淀", path: "summaries/dsh-会话-x.md" },
+          { title: "别家来源", path: "summaries/别家的.md" },
+          { title: "无路径", path: undefined },
+        ],
+      }),
+      { status: 200 },
+    );
+  }) as typeof fetch;
+  registerRecall(ctx as never, opts(fetchImpl));
+  // 第一次:缓存未就绪,埋点省略 revived,同时后台预热 /ingest/recent
+  await runPreStep(listeners, [userMsg("第一轮问题")], 1);
+  let info = logs.find((l) => l.level === "info" && l.text.includes("hits"));
+  assert.ok(info && !("revived" in JSON.parse(info.text)), "缓存未就绪不带 revived");
+  await new Promise((r) => setImmediate(r)); // 等后台刷新落账
+  // 第二次:交集 = dsh 沉淀页 1 条(hook-auto 来源的不算)
+  await runPreStep(listeners, [userMsg("第二轮问题")], 2);
+  const infos = logs.filter((l) => l.level === "info" && l.text.includes("hits"));
+  info = infos[infos.length - 1]!;
+  assert.equal((JSON.parse(info.text) as { revived: number }).revived, 1);
 });

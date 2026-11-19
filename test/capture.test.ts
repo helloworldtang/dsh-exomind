@@ -95,12 +95,25 @@ test("client_key:dsh- 前缀 48 位,同内容稳定,异内容不同", () => {
   assert.notEqual(key, deriveClientKey("内容乙"));
 });
 
-test("session/disposed 触发 /ingest/async 提交;drain 等待完成;提交失败被吞", async () => {
-  const bodies: unknown[] = [];
-  const okFetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
-    bodies.push(init?.body ? JSON.parse(String(init.body)) : null);
-    return new Response(JSON.stringify({ job_id: "job-1" }), { status: 200 });
+/** 按 URL 记录请求,POST 只解析 body —— dispose 现在会并行发 /suggest-topics GET,
+ *  计数必须按端点区分,不能再数总 fetch 次数。 */
+function makeRecordingFetch(
+  bodies: Array<{ url: string; body: unknown }>,
+  responder?: (url: string) => unknown,
+): typeof fetch {
+  return (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    bodies.push({ url, body: init?.body ? JSON.parse(String(init.body)) : null });
+    const payload = responder?.(url) ?? {};
+    return new Response(JSON.stringify(payload), { status: 200 });
   }) as typeof fetch;
+}
+
+test("session/disposed 触发 /ingest/async 提交;drain 等待完成;提交失败被吞", async () => {
+  const calls: Array<{ url: string; body: unknown }> = [];
+  const okFetch = makeRecordingFetch(calls, (url) =>
+    url.includes("/ingest/async") ? { job_id: "job-1" } : { topics: [] },
+  );
   const { ctx, listeners } = makeCaptureCtx();
   const drain = registerCapture(ctx as never, {
     ...CAPTURE_OPTS,
@@ -113,10 +126,18 @@ test("session/disposed 触发 /ingest/async 提交;drain 等待完成;提交失�
   listeners.get("session/event")?.(session, assistantEvent(LONG_ANSWER));
   listeners.get("session/disposed")?.(session);
   await drain();
-  assert.equal(bodies.length, 1);
-  const body = bodies[0] as { content: string; title: string; tags: string[]; client_key: string };
+  const posts = calls.filter((c) => c.url.includes("/ingest/async"));
+  assert.equal(posts.length, 1);
+  const body = posts[0]!.body as {
+    content: string;
+    title: string;
+    tags: string[];
+    origin: string;
+    client_key: string;
+  };
   assert.match(body.client_key, /^dsh-[0-9a-f]{44}$/);
   assert.deepEqual(body.tags, ["dsh", "会话存档"]);
+  assert.equal(body.origin, "dsh-plugin"); // 复活率回查的过滤键
   assert.match(body.title, /^DSH 会话:/);
 
   // 失败路径:断网/500 → 提交被吞,drain 正常返回
@@ -136,11 +157,8 @@ test("session/disposed 触发 /ingest/async 提交;drain 等待完成;提交失�
 });
 
 test("质量门槛外的会话不触发提交", async () => {
-  const bodies: unknown[] = [];
-  const fetchImpl = (async (_input: RequestInfo | URL, init?: RequestInit) => {
-    bodies.push(init?.body);
-    return new Response("{}", { status: 200 });
-  }) as typeof fetch;
+  const calls: Array<{ url: string; body: unknown }> = [];
+  const fetchImpl = makeRecordingFetch(calls);
   const { ctx, listeners } = makeCaptureCtx();
   registerCapture(ctx as never, {
     ...CAPTURE_OPTS,
@@ -152,7 +170,34 @@ test("质量门槛外的会话不触发提交", async () => {
   listeners.get("session/event")?.(session, userEvent("hi"));
   listeners.get("session/event")?.(session, assistantEvent("ok"));
   listeners.get("session/disposed")?.(session);
-  assert.equal(bodies.length, 0);
+  assert.equal(calls.filter((c) => c.url.includes("/ingest/async")).length, 0);
+});
+
+test("dispose 顺带取一条选题建议,与知情提示同通道输出;失败静默", async () => {
+  const calls: Array<{ url: string; body: unknown }> = [];
+  const fetchImpl = makeRecordingFetch(calls, (url) =>
+    url.includes("/suggest-topics")
+      ? { topics: [{ topic: "ExoMind 电台分发", reason: "图谱中电台节点密集但缺分发侧" }] }
+      : {},
+  );
+  const { ctx, listeners, logs } = makeCaptureCtx();
+  const drain = registerCapture(ctx as never, {
+    ...CAPTURE_OPTS,
+    baseUrl: "https://api.example.com",
+    apiKey: "k-1",
+    fetchImpl,
+  });
+  const session = {};
+  listeners.get("session/event")?.(session, userEvent("聊聊选题建议的输出位置"));
+  listeners.get("session/event")?.(session, assistantEvent(LONG_ANSWER));
+  listeners.get("session/disposed")?.(session);
+  await drain();
+  assert.ok(
+    calls.some((c) => c.url.includes("/suggest-topics")),
+    "建议请求已发起",
+  );
+  const line = logs.find((l) => l.level === "info" && l.text.includes("建议下一步深挖"));
+  assert.ok(line && line.text.includes("ExoMind 电台分发"), "建议一行含主题");
 });
 
 test("缓冲有界:超长会话条数封顶(保首条+最近),单条截断,digest 仍可构建", () => {
@@ -169,11 +214,8 @@ test("缓冲有界:超长会话条数封顶(保首条+最近),单条截断,diges
 });
 
 test("出站收口脱敏:命中的 secret 打码后才提交,client_key 按打码后内容计算", async () => {
-  const bodies: unknown[] = [];
-  const fetchImpl = (async (_input: RequestInfo | URL, init?: RequestInit) => {
-    bodies.push(init?.body ? JSON.parse(String(init.body)) : null);
-    return new Response("{}", { status: 200 });
-  }) as typeof fetch;
+  const calls: Array<{ url: string; body: unknown }> = [];
+  const fetchImpl = makeRecordingFetch(calls);
   const { ctx, listeners, logs } = makeCaptureCtx();
   const drain = registerCapture(ctx as never, {
     ...CAPTURE_OPTS,
@@ -189,8 +231,9 @@ test("出站收口脱敏:命中的 secret 打码后才提交,client_key 按打�
   listeners.get("session/event")?.(session, assistantEvent(LONG_ANSWER));
   listeners.get("session/disposed")?.(session);
   await drain();
-  assert.equal(bodies.length, 1);
-  const body = bodies[0] as { content: string; client_key: string };
+  const posts = calls.filter((c) => c.url.includes("/ingest/async"));
+  assert.equal(posts.length, 1);
+  const body = posts[0]!.body as { content: string; client_key: string };
   assert.match(body.content, /sk-a\*\*\*REDACTED\*\*\*/);
   assert.doesNotMatch(body.content, /0123456789abcdef0123456789/);
   assert.equal(body.client_key, deriveClientKey(body.content));
@@ -199,11 +242,8 @@ test("出站收口脱敏:命中的 secret 打码后才提交,client_key 按打�
 });
 
 test("出站收口脱敏:命中超阈值整条放弃,不发起提交", async () => {
-  const bodies: unknown[] = [];
-  const fetchImpl = (async (_input: RequestInfo | URL, init?: RequestInit) => {
-    bodies.push(init?.body);
-    return new Response("{}", { status: 200 });
-  }) as typeof fetch;
+  const calls: Array<{ url: string; body: unknown }> = [];
+  const fetchImpl = makeRecordingFetch(calls);
   const { ctx, listeners, logs } = makeCaptureCtx();
   registerCapture(ctx as never, {
     ...CAPTURE_OPTS,
@@ -220,7 +260,7 @@ test("出站收口脱敏:命中超阈值整条放弃,不发起提交", async () 
   );
   listeners.get("session/event")?.(session, assistantEvent(LONG_ANSWER));
   listeners.get("session/disposed")?.(session);
-  assert.equal(bodies.length, 0);
+  assert.equal(calls.filter((c) => c.url.includes("/ingest/async")).length, 0);
   const warn = logs.find((l) => l.level === "warn" && l.text.includes("dropped"));
   assert.ok(warn && JSON.parse(warn.text).dropped === true, "放弃埋点一行");
 });

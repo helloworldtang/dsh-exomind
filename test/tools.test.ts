@@ -1,5 +1,6 @@
 /** 质量点:①search 结果渲染含标题/召回路 ②entity 404 给可行动提示而非报错
- *  ③401 凭据错误翻译成带指引的 isError ④query 引用页随答案返回。 */
+ *  ③401 凭据错误翻译成带指引的 isError ④query 引用页随答案返回
+ *  ⑤suggest 渲染选题/理由/相关实体,count 钳制。 */
 import assert from "node:assert/strict";
 import test from "node:test";
 
@@ -59,11 +60,42 @@ test("注册三个工具;search 渲染标题与召回路", async () => {
       })),
     ),
   );
-  assert.equal(tools.length, 3);
+  assert.equal(tools.length, 4);
   const result = await toolByName(tools, "exomind_search").execute({ query: "dsh" }, exec);
   assert.match(result.text as string, /找到 1 条结果/);
   assert.match(result.text as string, /DSH 接入 spike/);
   assert.match(result.text as string, /召回路: bm25\+vector/);
+});
+
+test("suggest 返回选题建议,渲染主题/理由/相关实体;count 超界钳制", async () => {
+  const urls: string[] = [];
+  const { ctx, tools } = fakeCtx();
+  registerExomindTools(
+    ctx as never,
+    opts(
+      fetchJson((url) => {
+        urls.push(url);
+        return {
+          status: 200,
+          body: {
+            topics: [
+              {
+                topic: "ExoMind 电台分发",
+                reason: "电台节点密集但缺分发侧沉淀",
+                related: ["记忆电台", "分发链路"],
+              },
+            ],
+            count: 1,
+          },
+        };
+      }),
+    ),
+  );
+  const result = await toolByName(tools, "exomind_suggest").execute({ count: 99 }, exec);
+  assert.match(result.text as string, /ExoMind 电台分发/);
+  assert.match(result.text as string, /电台节点密集但缺分发侧沉淀/);
+  assert.match(result.text as string, /记忆电台、分发链路/);
+  assert.ok(urls[0]!.includes("count=10"), `count 钳制到上限: ${urls[0]}`);
 });
 
 test("entity 404 返回提示文本;401 抛出带 exomind login 指引的错误", async () => {

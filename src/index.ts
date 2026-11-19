@@ -8,8 +8,10 @@ import Schema from "@deepseek-ai/schemastery";
 import { ExoMindClient } from "./api.js";
 import { registerCapture } from "./capture.js";
 import { resolveTarget } from "./config.js";
+import { registerFollowup } from "./followup.js";
 import { exomindMessageSource } from "./message-source.js";
 import { buildRecallQuery, recallTimeoutMs, renderRecallText, TurnRecallGate } from "./recall.js";
+import { DshPageRegistry } from "./revival.js";
 import { registerExomindTools, type ToolOptions } from "./tools.js";
 
 export const name = "exomind-flywheel";
@@ -75,19 +77,35 @@ interface RecallOptions extends ToolOptions {
 /** agent/pre-step waterfall:先放行默认决策,再在原消息后追加召回消息。
  *  只对含 source.kind==='user' 的步召回(工具循环/插件消息/自身召回消息都不触发),
  *  同一逻辑 turn 去重;任何异常 fail-open 返回原决策。
- *  每次召回打一行结构化埋点(qChars/msgs/hits/ms/injected),是召回质量后续优化的地基。 */
+ *  每次召回打一行结构化埋点(qChars/msgs/hits/ms/injected[/revived]),是召回质量
+ *  后续优化的地基;skip 路径(短查询/同 turn 去重)每 turn 至多一行 skipped 埋点。 */
 export function registerRecall(
   ctx: Context,
   options: RecallOptions,
   gate: TurnRecallGate = new TurnRecallGate(),
 ): () => void {
   const logger = ctx.logger("exomind-recall");
+  const registry = new DshPageRegistry(options);
+  // skipped 埋点按 (agent, turn) 去重:工具循环的多次 pre-step 只留一行
+  const lastSkipLogged = new WeakMap<object, number>();
+  const logSkip = (agent: object, turn: number, reason: "short-query" | "dedup"): void => {
+    if (lastSkipLogged.get(agent) === turn) return;
+    lastSkipLogged.set(agent, turn);
+    logger.info(JSON.stringify({ turn, skipped: reason }));
+  };
   return ctx.on("agent/pre-step", async (payload, next) => {
     const decision = await next();
     if (decision.kind !== "enter") return decision;
     const { query, usedMessages } = buildRecallQuery(decision.messages);
     // buildRecallQuery 已按 source 排除自身召回消息;此处长度门槛挡掉单字符噪声。
-    if (query.length < 2 || !gate.claim(payload.agent, payload.turn)) return decision;
+    if (query.length < 2) {
+      logSkip(payload.agent, payload.turn, "short-query");
+      return decision;
+    }
+    if (!gate.claim(payload.agent, payload.turn)) {
+      logSkip(payload.agent, payload.turn, "dedup");
+      return decision;
+    }
     const startedAt = Date.now();
     const metric = { turn: payload.turn, qChars: query.length, msgs: usedMessages };
     try {
@@ -97,19 +115,30 @@ export function registerRecall(
       );
       const client = new ExoMindClient(target.baseUrl, target.apiKey, options.fetchImpl);
       const result = (await client.get("/search", {
-        query: { q: query, limit: options.recallLimit },
+        query: {
+          q: query,
+          limit: options.recallLimit,
+          // 机器召回走独立 recall 通道:服务端不写 usage_log(不稀释质量分母),
+          // 零命中才记缺口;旧服务端忽略该参数,退回 web 口径也不炸
+          channel: "recall",
+        },
         timeoutMs: recallTimeoutMs(options.recallTimeoutMs),
         signal: payload.signal,
         retries: 0, // 前台预算内不重试,超时即放弃
       })) as { results?: RecallHit[] };
       const hits = result.results ?? [];
       const text = renderRecallText(hits, options.recallMaxChars);
+      // 复活率:命中页与本插件此前沉淀页的交集数。peek 只读缓存(前台零网络等待),
+      // 缓存未就绪本次省略;refresh 单飞后台预热下一次就有
+      const revived = registry.peek(hits.map((hit) => hit.path));
+      registry.refresh();
       logger.info(
         JSON.stringify({
           ...metric,
           hits: hits.length,
           ms: Date.now() - startedAt,
           injected: text !== null,
+          ...(revived !== null ? { revived } : {}),
         }),
       );
       if (!text) return decision;
@@ -139,6 +168,8 @@ export function apply(ctx: Context, config: Config): () => Promise<void> {
   const disposers: Array<() => void> = [];
   if (config.recallEnabled) {
     disposers.push(registerRecall(ctx, { ...config }));
+    // 采纳信号挂在召回之下:没有注入就没有 followup 可言
+    disposers.push(registerFollowup(ctx));
   }
   disposers.push(registerExomindTools(ctx, config));
   const drain = config.captureEnabled
