@@ -1,6 +1,6 @@
 # dsh-exomind
 
-把 [ExoMind 知识飞轮](https://exomind.ai-as.cn)接入 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)(DSH):为 agent 提供四个工具,让它直接检索和问答你的个人知识库——实体图谱、经验沉淀、踩坑记录。
+把 [ExoMind 知识飞轮](https://exomind.ai-as.cn)接入 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)(DSH):为 agent 提供五个工具,让它直接检索、问答、沉淀你的个人知识库——实体图谱、经验沉淀、踩坑记录。
 
 与本地记忆插件不同,ExoMind 是**服务端知识飞轮**(实体/关系图谱 + FSRS 复习),同一份记忆同时服务 Claude Code(MCP/CLI)、小程序、浏览器插件与本插件,换 harness 不丢记忆。
 
@@ -12,13 +12,14 @@
 | `exomind_entity`  | 查实体详情:定义、别名、关联实体                       | 秒级                  |
 | `exomind_query`   | 跨多页知识的 LLM 深度问答                             | 慢(1-2 分钟),仅深问题 |
 | `exomind_suggest` | 建议下一步深挖主题(图谱密度/盲区/跨域关联)            | 秒级                  |
+| `exomind_ingest`  | 把会话中值得长期保留的结论当场存入飞轮                | 秒级(异步抽取)        |
 
 ## 安装
 
 > 前置:DSH 0.2.1-rc.2+(preview 阶段 API 在变,本插件按 0.2.1-rc 与 0.2.2-rc 系列验证,`engines.dsh` 已声明,新版 DSH 安装器会做前置检查);Node 22+;已用 `exomind login` 登录过 ExoMind(见下"凭据")。
 
 ```bash
-dsh plugin --profile <你的profile> add github:helloworldtang/dsh-exomind#v0.5.0
+dsh plugin --profile <你的profile> add github:helloworldtang/dsh-exomind#v0.6.0
 dsh --profile <你的profile> --dump-config   # 应看到 id: exomind-flywheel 的 bundle 行
 # 重启该 profile 后生效
 ```
@@ -84,6 +85,15 @@ dsh --profile <你的profile> --dump-config   # 应看到 id: exomind-flywheel �
 
 不想要自动沉淀:`captureEnabled: false`。
 
+## Agent 主动沉淀(v0.6.0+)
+
+自动沉淀是整场兜底(质量门槛只看长度),`exomind_ingest` 工具把「什么值得存」的判断交给 agent:架构决策与理由、踩坑根因、经验总结,会话中段**当场**存入飞轮,不等会话结束、不受 digest 截断。召回注入的头部声明会引导 agent 在出现值得保留的结论时使用它——这是 DSH 侧唯一的稳定引导通道(没有 CLAUDE.md 等价物)。
+
+- 与自动沉淀并存:工具存精选亮点,自动存任务全景;重叠由服务端抽取/判重收口;
+- 出站脱敏与自动沉淀同一套扫描,但行为不同——密钥清单**不静默放弃,而是返回 isError** 告知 agent 打码后重试(工具路径 agent 能对反馈采取行动);零星密钥照常自动打码;
+- 质量门:正文不足 50 字 / 超 5 万字拒绝;标签最多 5 个,自动追加 `dsh` + `agent存档` 标签族与 `origin=dsh-plugin`(复活率统计与自动沉淀同源可比);
+- `client_key` 幂等同款(内容哈希派生),同内容重试不产生重复。
+
 ## 数据闭环观测(v0.5.0+)
 
 飞轮的后半圈(使用→反馈→驱动下一轮摄入)靠三组埋点转起来,全部输出在 `exomind-recall` / `exomind-capture` logger,可直接从日志统计:
@@ -106,6 +116,7 @@ dsh plugin --profile <你的profile> remove dsh-exomind
 - ✅ Phase 2:自动召回——`agent/pre-step` 有界 BM25 注入,3 秒 SLA + fail-open(v0.2.0)。
 - ✅ Phase 3:会话沉淀——`session/disposed` 质量门槛 + `/ingest/async` 幂等提交(v0.3.0)。
 - ✅ Phase 4:数据闭环——召回采纳信号(followup)+ 复活率(revived)+ 独立 recall 缺口通道 + 主动建议(exomind_suggest 与 dispose 日志行)(v0.5.0)。
+- ✅ Phase 5:Agent 主动沉淀——exomind_ingest 工具 + 召回头部引导 + 密钥清单可行动拒绝(v0.6.0)。
 
 ## 开发
 
@@ -126,7 +137,7 @@ GitHub Actions 自动 npm publish(trusted publishing,无 token)。
 安装(npm 已发布后):
 
 ```bash
-dsh plugin --profile <你的profile> add dsh-exomind@0.5.0
+dsh plugin --profile <你的profile> add dsh-exomind@0.6.0
 ```
 
 ## License

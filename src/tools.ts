@@ -1,4 +1,4 @@
-/** 只读工具面:exomind_search / exomind_entity / exomind_query。
+/** 工具面:exomind_search / exomind_entity / exomind_query / exomind_suggest / exomind_ingest。
  *  注册形状对齐 MemOS DSH adapter(ctx.tools.register + defineTool),
  *  输出统一走 {text} 契约,供 DSH 渲染为工具结果。 */
 import type { Context } from "@deepseek-ai/cordis";
@@ -6,6 +6,9 @@ import { defineTool } from "@deepseek-ai/dsh-tools";
 
 import { ApiError, ExoMindClient } from "./api.js";
 import { resolveTarget, type ResolveEnv } from "./config.js";
+import { deriveClientKey } from "./capture.js";
+import { sanitizeDigest } from "./sanitize.js";
+import { DSH_ORIGIN } from "./revival.js";
 
 export interface ToolOptions {
   baseUrl?: string;
@@ -316,6 +319,88 @@ export function registerExomindTools(ctx: Context, options: ToolOptions): () => 
               return { text: clip(formatSuggestResult(result), maxResultChars) };
             } catch (e) {
               throw toToolError(e, "suggest");
+            }
+          },
+        }),
+      ),
+    );
+
+    const captureLogger = ctx.logger("exomind-capture");
+    disposers.push(
+      ctx.tools.register(
+        defineTool({
+          name: "exomind_ingest",
+          description:
+            "把本会话中值得长期保留的知识存入 ExoMind 知识飞轮:架构决策与理由、踩坑根因、" +
+            "经验总结、好的设计/想法。会话出现「这个值得记下来」的结论时**当场**调用," +
+            "不要等会话结束——内容应自包含(脱离本会话也能读懂),面向未来的检索场景。",
+          parameters: {
+            content: {
+              type: "string",
+              required: true,
+              description: "知识正文,自包含(背景/结论/依据),50 字以上,勿包含任何密钥。",
+            },
+            title: { type: "string", description: "标题(可选,默认截取正文开头)。" },
+            tags: { type: "string", description: "可选,空格分隔的标签(最多 5 个)。" },
+          },
+          output: JSON_OUTPUT,
+          isConcurrencySafe: () => true,
+          async execute(args, exec) {
+            const content = requireText(args.content, "content");
+            if (content.length < 50) {
+              throw new Error(
+                "内容太短(不足 50 字),不足以构成知识单元;请补充背景与结论使其自包含。",
+              );
+            }
+            if (content.length > 50_000) {
+              throw new Error(`内容超长(${content.length} 字,上限 50000),请精简后重试。`);
+            }
+            const title =
+              typeof args.title === "string" && args.title.trim()
+                ? args.title.trim().slice(0, 60)
+                : content.slice(0, 30);
+            // 出站收口脱敏:与自动沉淀同一套扫描。与 capture 的静默放弃不同——
+            // 工具路径 agent 能对错误反馈采取行动,直接告知打码后重试
+            const sanitized = sanitizeDigest(content, title);
+            if (sanitized.masked > 0) {
+              captureLogger.warn(
+                JSON.stringify({
+                  masked: sanitized.masked,
+                  dropped: sanitized.dropped,
+                  via: "tool",
+                }),
+              );
+            }
+            if (sanitized.dropped) {
+              throw new Error(
+                `内容命中 ${sanitized.masked} 处结构化密钥形态,疑似密钥清单;已拒绝上传。` +
+                  "请移除敏感凭据后重试(零星密钥可保留,插件会自动打码)。",
+              );
+            }
+            const userTags =
+              typeof args.tags === "string"
+                ? args.tags.trim().split(/\s+/).filter(Boolean).slice(0, 5)
+                : [];
+            try {
+              const result = (await client().post("/ingest/async", {
+                body: {
+                  content: sanitized.content,
+                  title: sanitized.title,
+                  tags: [...userTags, "dsh", "agent存档"],
+                  origin: DSH_ORIGIN,
+                  client_key: deriveClientKey(sanitized.content),
+                },
+                timeoutMs: 10_000,
+                signal: exec.signal,
+              })) as { job_id?: string; dedup?: string };
+              return {
+                text:
+                  `已提交知识飞轮(异步抽取约 1-3 分钟)${result.dedup ? `,服务端去重命中(${result.dedup}),不产生重复` : ""}。` +
+                  (result.job_id ? `进度: /ingest/status?job_id=${result.job_id}` : ""),
+                title: sanitized.title,
+              };
+            } catch (e) {
+              throw toToolError(e, "ingest");
             }
           },
         }),

@@ -1,6 +1,7 @@
 /** 质量点:①search 结果渲染含标题/召回路 ②entity 404 给可行动提示而非报错
  *  ③401 凭据错误翻译成带指引的 isError ④query 引用页随答案返回
- *  ⑤suggest 渲染选题/理由/相关实体,count 钳制。 */
+ *  ⑤suggest 渲染选题/理由/相关实体,count 钳制
+ *  ⑥ingest:body 带 origin/client_key/标签族;密钥打码后提交;密钥清单拒绝并给可行动错误;短内容拒绝。 */
 import assert from "node:assert/strict";
 import test from "node:test";
 
@@ -11,13 +12,18 @@ interface ToolDef {
   execute: (args: Record<string, unknown>, exec: unknown) => Promise<Record<string, unknown>>;
 }
 
-function fakeCtx(): { ctx: unknown; tools: ToolDef[] } {
+function fakeCtx(): { ctx: unknown; tools: ToolDef[]; logs: string[] } {
   const tools: ToolDef[] = [];
+  const logs: string[] = [];
   function register(tool: ToolDef): () => void {
     tools.push(tool);
     return () => undefined;
   }
-  return { ctx: { tools: { register } }, tools };
+  const logger = (): { info: (t: string) => void; warn: (t: string) => void } => ({
+    info: (text) => logs.push(text),
+    warn: (text) => logs.push(text),
+  });
+  return { ctx: { tools: { register }, logger }, tools, logs };
 }
 
 const exec = { signal: undefined };
@@ -60,7 +66,7 @@ test("注册三个工具;search 渲染标题与召回路", async () => {
       })),
     ),
   );
-  assert.equal(tools.length, 4);
+  assert.equal(tools.length, 5);
   const result = await toolByName(tools, "exomind_search").execute({ query: "dsh" }, exec);
   assert.match(result.text as string, /找到 1 条结果/);
   assert.match(result.text as string, /DSH 接入 spike/);
@@ -144,4 +150,91 @@ test("query 返回答案与引用页", async () => {
   );
   assert.match(result.text as string, /答:3 秒。/);
   assert.match(result.text as string, /• summaries\/spike\.md/);
+});
+
+const INGEST_CONTENT =
+  "背景:DSH 前台召回有 3 秒硬上限不可配置。结论:自动召回只走 BM25(实测 0.3s)," +
+  "hybrid(1.2s)与 LLM query 绝不进前台;依据是 10 倍余量原则。";
+
+test("ingest 提交异步摄入:body 带 origin/client_key/标签族,返回进度提示", async () => {
+  const posts: Array<{ url: string; body: Record<string, unknown> }> = [];
+  const { ctx, tools } = fakeCtx();
+  const fetchImpl: typeof fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    posts.push({ url: String(input), body: JSON.parse(String(init?.body)) });
+    return new Response(JSON.stringify({ job_id: "job-9", status: "pending" }), { status: 200 });
+  }) as typeof fetch;
+  registerExomindTools(ctx as never, opts(fetchImpl));
+  const result = await toolByName(tools, "exomind_ingest").execute(
+    { content: INGEST_CONTENT, title: "DSH 前台召回预算", tags: "dsh 性能" },
+    exec,
+  );
+  assert.match(result.text as string, /已提交知识飞轮/);
+  assert.match(result.text as string, /job_id=job-9/);
+  const body = posts[0]!.body as {
+    content: string;
+    title: string;
+    tags: string[];
+    origin: string;
+    client_key: string;
+  };
+  assert.equal(body.origin, "dsh-plugin");
+  assert.deepEqual(body.tags, ["dsh", "性能", "dsh", "agent存档"]); // 用户标签在前,标签族在后
+  assert.match(body.client_key, /^dsh-[0-9a-f]{44}$/);
+  assert.equal(body.title, "DSH 前台召回预算");
+});
+
+test("ingest 脱敏:零星密钥打码后照常提交;密钥清单拒绝且错误可行动", async () => {
+  const posts: Array<Record<string, unknown>> = [];
+  const fetchImpl: typeof fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+    posts.push(JSON.parse(String(init?.body)));
+    return new Response(JSON.stringify({ job_id: "job-10" }), { status: 200 });
+  }) as typeof fetch;
+  const { ctx, tools } = fakeCtx();
+  registerExomindTools(ctx as never, opts(fetchImpl));
+  const secret = await toolByName(tools, "exomind_ingest").execute(
+    {
+      content:
+        "排查 401 的经验:先看 token 是否过期,例如 sk-abcdef0123456789abcdef0123456789 形态的 key," +
+        "再查 JWKS 缓存;根因通常是时钟漂移导致签名校验失败,修法是同步 NTP 后重启服务。",
+      title: "OIDC 401 排查",
+    },
+    exec,
+  );
+  assert.match(secret.text as string, /已提交/);
+  assert.match(String(posts[0]!.content), /sk-a\*\*\*REDACTED\*\*\*/); // 打码后才出站
+
+  const trove = await toolByName(tools, "exomind_ingest")
+    .execute(
+      {
+        content:
+          "密钥清单备份:" +
+          Array.from({ length: 12 }, (_, i) => `sk-key${i}0123456789abcdef0123456789`).join("\n") +
+          "以上是全部,记录完毕,内容凑够五十字以通过长度门槛。",
+      },
+      exec,
+    )
+    .then(
+      () => null,
+      (e: Error) => e,
+    );
+  assert.ok(trove instanceof Error && /密钥/.test(trove.message), "密钥清单拒绝且说明原因");
+  assert.equal(posts.length, 1, "拒绝路径不发起上传");
+});
+
+test("ingest 质量门:过短/超长内容拒绝,不发起上传", async () => {
+  let calls = 0;
+  const fetchImpl: typeof fetch = (async () => {
+    calls++;
+    return new Response("{}", { status: 200 });
+  }) as typeof fetch;
+  const { ctx, tools } = fakeCtx();
+  registerExomindTools(ctx as never, opts(fetchImpl));
+  const short = await toolByName(tools, "exomind_ingest")
+    .execute({ content: "太短" }, exec)
+    .then(
+      () => null,
+      (e: Error) => e,
+    );
+  assert.ok(short instanceof Error && /50 字/.test(short.message));
+  assert.equal(calls, 0);
 });
