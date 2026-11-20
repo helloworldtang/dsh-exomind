@@ -16,7 +16,9 @@ const RECENT_LIMIT = 100;
 const DEFAULT_TTL_MS = 10 * 60_000;
 
 interface RecentItem {
-  source?: string;
+  /** 摄入渠道 = ingest 请求的 origin 透传(线上实证 2026-11-20:claude-session/hook-auto)。
+   *  注意别用 item.source——那是展示名(公众号/作者),人工摄入恒为空。 */
+  channel?: string;
   created_pages?: string[];
   updated_pages?: string[];
 }
@@ -69,7 +71,7 @@ export class DshPageRegistry {
       })) as { items?: RecentItem[] };
       const pages = new Set<string>();
       for (const item of result.items ?? []) {
-        if (item.source !== DSH_ORIGIN) continue;
+        if (item.channel !== DSH_ORIGIN) continue;
         for (const p of [...(item.created_pages ?? []), ...(item.updated_pages ?? [])]) {
           pages.add(p);
         }

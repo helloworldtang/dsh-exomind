@@ -19,7 +19,7 @@
 > 前置:DSH 0.2.1-rc.2+(preview 阶段 API 在变,本插件按 0.2.1-rc 与 0.2.2-rc 系列验证,`engines.dsh` 已声明,新版 DSH 安装器会做前置检查);Node 22+;已用 `exomind login` 登录过 ExoMind(见下"凭据")。
 
 ```bash
-dsh plugin --profile <你的profile> add github:helloworldtang/dsh-exomind#v0.7.0
+dsh plugin --profile <你的profile> add github:helloworldtang/dsh-exomind#v0.7.1
 dsh --profile <你的profile> --dump-config   # 应看到 id: exomind-flywheel 的 bundle 行
 # 重启该 profile 后生效
 ```
@@ -113,7 +113,7 @@ exomind_ingest 存入知识飞轮,不要等会话结束;内容自包含,勿含�
 飞轮的后半圈(使用→反馈→驱动下一轮摄入)靠三组埋点转起来,全部输出在 `exomind-recall` / `exomind-capture` logger,可直接从日志统计:
 
 - **采纳信号**:每个有注入的 turn 在 turn/end 打一行 `{turn, followup:"<工具名>"|"none", adopted:true|false}`。`followup` = turn 内 agent 调过的第一个 exomind 检索工具(绕开信号);`adopted` = 助手回答文本中出现了注入命中页的标题(正向采纳,子串代理:转述不含原标题会偏低估)。四档读法:none+adopted=纯采纳 / 工具+adopted=顺着注入深挖 / 工具+¬adopted=绕开重查 / none+¬adopted=可能被忽略——是召回择优/降级开关的启动证据。
-- **复活率**:召回埋点的 `revived` 字段 = 命中页与「本插件此前沉淀页」(`/ingest/recent` 中 origin=dsh-plugin 的 created/updated pages)的交集数。「上一场会话的沉淀成为下一场的召回」从此是可观测数字,不再是叙事。命中页集合进程内缓存(TTL 10 分钟),前台召回路径零额外网络等待。
+- **复活率**:召回埋点的 `revived` 字段 = 命中页与「本插件此前沉淀页」(`/ingest/recent` 中 channel=dsh-plugin 的 created/updated pages)的交集数。「上一场会话的沉淀成为下一场的召回」从此是可观测数字,不再是叙事。命中页集合进程内缓存(TTL 10 分钟),前台召回路径零额外网络等待。
 - **主动建议**:会话结束沉淀时顺带取一条 `/suggest-topics` 选题,以「ExoMind 建议下一步深挖: <主题> — <理由>」输出在 `exomind-capture` 日志,失败静默。agent 也可随时用 `exomind_suggest` 工具主动取。
 
 ## 卸载
@@ -152,7 +152,7 @@ GitHub Actions 自动 npm publish(trusted publishing,无 token)。
 安装(npm 已发布后):
 
 ```bash
-dsh plugin --profile <你的profile> add dsh-exomind@0.7.0
+dsh plugin --profile <你的profile> add dsh-exomind@0.7.1
 ```
 
 ## License

@@ -269,11 +269,11 @@ test("复活率:命中页与 dsh 沉淀页交集计入 revived;缓存未就绪�
         JSON.stringify({
           items: [
             {
-              source: "dsh-plugin",
+              channel: "dsh-plugin",
               created_pages: ["summaries/dsh-会话-x.md"],
               updated_pages: ["entities/foo.md"],
             },
-            { source: "hook-auto", created_pages: ["summaries/别家的.md"] },
+            { channel: "hook-auto", created_pages: ["summaries/别家的.md"] },
           ],
         }),
         { status: 200 },
