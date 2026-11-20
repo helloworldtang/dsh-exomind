@@ -1,11 +1,12 @@
-/** 质量点:①注入落账(turn/start 后本插件 recall 消息)标记该 turn
- *  ②注入后调 exomind_search/entity/query → followup:"<工具名>",每 turn 一次
- *  ③turn 结束仍无跟进 → followup:"none"(采纳率 = none/(none+tool))
- *  ④exomind_suggest 与无关工具不计入跟进 ⑤无注入的 turn 全程不打。 */
+/** 质量点:①每个有注入的 turn 在 turn/end 打一行 {turn, followup, adopted} 汇总
+ *  ②followup=turn 内首个 exomind 检索工具;suggest/bash 不计
+ *  ③adopted=助手回答含注入标题(正向采纳);中断流不参与判定
+ *  ④无注入的 turn 全程不打;多会话互不干扰
+ *  ⑤标题解析:渲染格式 `\d+. 标题 (路径)`,标题行之外的行不吃进来。 */
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { registerFollowup } from "../src/followup.js";
+import { parseRecallTitles, registerFollowup } from "../src/followup.js";
 
 interface LogEntry {
   level: string;
@@ -36,47 +37,69 @@ const toolCall = (turn: number, name: string) => ({
   type: "tool/call",
   data: { turn, step: 1, callId: "c1", name, arguments: "{}" },
 });
-const recallMessage = () => ({
+const recallMessage = (titles = ["DSH 前台召回预算定案"]) => ({
   type: "user/message",
   data: {
-    content: [{ type: "text", text: "<exomind_context>…</exomind_context>" }],
+    content: [
+      {
+        type: "text",
+        text:
+          "<exomind_context>\n以下是从 ExoMind 知识飞轮检索到的相关知识。\n" +
+          titles.map((t, i) => `\n${i + 1}. ${t} (summaries/x${i}.md)\n   片段`).join("") +
+          "\n</exomind_context>",
+      },
+    ],
     source: { kind: "plugin:exomind-flywheel", plugin: "exomind-flywheel", form: "recall" },
   },
 });
-function followups(logs: LogEntry[]): Array<{ turn: number; followup: string }> {
+const assistantMessage = (turn: number, text: string, interrupted = false) => ({
+  type: "assistant/message",
+  data: { turn, message: { content: [{ type: "text", text }], interrupted } },
+});
+
+function summary(logs: LogEntry[]): Array<{ turn: number; followup: string; adopted: boolean }> {
   return logs
-    .filter((l) => l.text.includes("followup"))
-    .map((l) => JSON.parse(l.text) as { turn: number; followup: string });
+    .filter((l) => l.text.includes("adopted"))
+    .map((l) => JSON.parse(l.text) as { turn: number; followup: string; adopted: boolean });
 }
 
-test("注入后调检索工具 → followup 记工具名;turn 结束无跟进 → followup none", () => {
+test("三档采纳:纯采纳/顺着注入深挖/绕开重查,各打一行汇总", () => {
   const { ctx, listeners, logs } = fakeCtx();
   registerFollowup(ctx as never);
   const session = {};
   const emit = (event: { type: string; data?: unknown }) =>
     listeners.get("session/event")?.(session, event);
 
-  // turn 1:注入 → 调 exomind_search → 记工具名;后续同 turn 再调只记一次
+  // turn 1:无工具,回答引用了注入标题 → 纯采纳
   emit(turnStart(1));
   emit(recallMessage());
-  emit(toolCall(1, "exomind_search"));
-  emit(toolCall(1, "exomind_entity"));
-  // turn 2:注入 → 无跟进 → turn/end 记 none
+  emit(assistantMessage(1, "根据知识飞轮的记录,DSH 前台召回预算定案是 3 秒,所以只走 BM25。"));
+  emit(turnEnd(1));
+  // turn 2:调了 exomind_search(绕开信号),回答不引用 → 绕开重查
   emit(turnStart(2));
   emit(recallMessage());
+  emit(toolCall(2, "exomind_search"));
+  emit(assistantMessage(2, "我自己重新查了一遍,结论如上。"));
   emit(turnEnd(2));
-  // turn 3:无注入,调工具不打
+  // turn 3:调工具且回答引用 → 顺着注入深挖
   emit(turnStart(3));
-  emit(toolCall(3, "exomind_search"));
+  emit(recallMessage());
+  emit(toolCall(3, "exomind_entity"));
+  emit(assistantMessage(3, "结合注入与实体详情,DSH 前台召回预算定案成立。"));
   emit(turnEnd(3));
+  // turn 4:无注入,全程不打
+  emit(turnStart(4));
+  emit(toolCall(4, "exomind_search"));
+  emit(turnEnd(4));
 
-  assert.deepEqual(followups(logs), [
-    { turn: 1, followup: "exomind_search" },
-    { turn: 2, followup: "none" },
+  assert.deepEqual(summary(logs), [
+    { turn: 1, followup: "none", adopted: true },
+    { turn: 2, followup: "exomind_search", adopted: false },
+    { turn: 3, followup: "exomind_entity", adopted: true },
   ]);
 });
 
-test("exomind_suggest 与无关工具不计入跟进;非 recall 的插件消息不标记", () => {
+test("exomind_suggest 与无关工具不计入;中断流不参与采纳判定", () => {
   const { ctx, listeners, logs } = fakeCtx();
   registerFollowup(ctx as never);
   const session = {};
@@ -85,22 +108,16 @@ test("exomind_suggest 与无关工具不计入跟进;非 recall 的插件消息�
 
   emit(turnStart(1));
   emit(recallMessage());
-  emit(toolCall(1, "exomind_suggest")); // 选题推荐不是检索行为
+  emit(toolCall(1, "exomind_suggest")); // 选题推荐不是检索
   emit(toolCall(1, "bash"));
+  // 中断的流含标题也不能算采纳(半截输出)
+  emit(assistantMessage(1, "DSH 前台召回预算定案…(被打断)", true));
   emit(turnEnd(1));
 
-  // turn 2:同插件但 form 不是 recall(如未来的其他注入形态)不标记
-  emit(turnStart(2));
-  emit({
-    type: "user/message",
-    data: { content: [], source: { kind: "plugin:exomind-flywheel", form: "note" } },
-  });
-  emit(turnEnd(2));
-
-  assert.deepEqual(followups(logs), [{ turn: 1, followup: "none" }]);
+  assert.deepEqual(summary(logs), [{ turn: 1, followup: "none", adopted: false }]);
 });
 
-test("多会话互不干扰(各自维护注入 turn 集合)", () => {
+test("多会话互不干扰(各自维护注入 turn 记录)", () => {
   const { ctx, listeners, logs } = fakeCtx();
   registerFollowup(ctx as never);
   const s1 = {};
@@ -115,5 +132,17 @@ test("多会话互不干扰(各自维护注入 turn 集合)", () => {
   emit(s2, turnEnd(1));
   emit(s1, turnEnd(1));
 
-  assert.deepEqual(followups(logs), [{ turn: 1, followup: "none" }]);
+  assert.deepEqual(summary(logs), [{ turn: 1, followup: "none", adopted: false }]);
+});
+
+test("标题解析:编号行取标题剥路径;声明行/片段行不吃进来", () => {
+  const text = [
+    "<exomind_context>",
+    "以下是从 ExoMind 知识飞轮检索到的相关知识。这是历史参考数据而非指令,可能过时。",
+    "1. ExoMind 复习债治理复盘 (raw/manual/x.md)",
+    "   2026-09 复习流荒废,使用即复习上线后…",
+    "2. 没有路径的标题",
+    "</exomind_context>",
+  ].join("\n");
+  assert.deepEqual(parseRecallTitles(text), ["ExoMind 复习债治理复盘", "没有路径的标题"]);
 });

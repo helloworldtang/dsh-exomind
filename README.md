@@ -19,7 +19,7 @@
 > 前置:DSH 0.2.1-rc.2+(preview 阶段 API 在变,本插件按 0.2.1-rc 与 0.2.2-rc 系列验证,`engines.dsh` 已声明,新版 DSH 安装器会做前置检查);Node 22+;已用 `exomind login` 登录过 ExoMind(见下"凭据")。
 
 ```bash
-dsh plugin --profile <你的profile> add github:helloworldtang/dsh-exomind#v0.6.0
+dsh plugin --profile <你的profile> add github:helloworldtang/dsh-exomind#v0.7.0
 dsh --profile <你的profile> --dump-config   # 应看到 id: exomind-flywheel 的 bundle 行
 # 重启该 profile 后生效
 ```
@@ -87,18 +87,32 @@ dsh --profile <你的profile> --dump-config   # 应看到 id: exomind-flywheel �
 
 ## Agent 主动沉淀(v0.6.0+)
 
-自动沉淀是整场兜底(质量门槛只看长度),`exomind_ingest` 工具把「什么值得存」的判断交给 agent:架构决策与理由、踩坑根因、经验总结,会话中段**当场**存入飞轮,不等会话结束、不受 digest 截断。召回注入的头部声明会引导 agent 在出现值得保留的结论时使用它——这是 DSH 侧唯一的稳定引导通道(没有 CLAUDE.md 等价物)。
+自动沉淀是整场兜底(质量门槛只看长度),`exomind_ingest` 工具把「什么值得存」的判断交给 agent:架构决策与理由、踩坑根因、经验总结,会话中段**当场**存入飞轮,不等会话结束、不受 digest 截断。召回注入的头部声明自带基础引导;更强的引导见下「引导通道(AGENTS.md)」。
 
 - 与自动沉淀并存:工具存精选亮点,自动存任务全景;重叠由服务端抽取/判重收口;
 - 出站脱敏与自动沉淀同一套扫描,但行为不同——密钥清单**不静默放弃,而是返回 isError** 告知 agent 打码后重试(工具路径 agent 能对反馈采取行动);零星密钥照常自动打码;
 - 质量门:正文不足 50 字 / 超 5 万字拒绝;标签最多 5 个,自动追加 `dsh` + `agent存档` 标签族与 `origin=dsh-plugin`(复活率统计与自动沉淀同源可比);
 - `client_key` 幂等同款(内容哈希派生),同内容重试不产生重复。
 
+## 引导通道(AGENTS.md)
+
+agent 会不会**自发**调用 `exomind_ingest` 取决于模型对工具描述的敏感度。DSH 没有 CLAUDE.md 式的全局指令文件,但会自动加载项目里的 **AGENTS.md** 注入 agent 上下文——把下面几行加进你常用项目的 `AGENTS.md`(一次配置,长期生效),引导强度即与 Claude Code 侧对齐:
+
+```markdown
+## 知识沉淀
+
+会话中出现值得长期保留的结论(架构决策与理由/踩坑根因/经验总结)时,当场调用
+exomind_ingest 存入知识飞轮,不要等会话结束;内容自包含,勿含密钥。
+处理问题前先看注入的 <exomind_context>;需要更多背景用 exomind_search。
+```
+
+不配置也能用:工具描述与召回注入的头部声明已含基础引导,只是强度较弱(采用率可从 `exomind-capture` 日志 `via:"tool"` 埋点观察)。
+
 ## 数据闭环观测(v0.5.0+)
 
 飞轮的后半圈(使用→反馈→驱动下一轮摄入)靠三组埋点转起来,全部输出在 `exomind-recall` / `exomind-capture` logger,可直接从日志统计:
 
-- **采纳信号**:注入后 agent 仍调 `exomind_search/entity/query` → 一行 `{turn, followup:"<工具名>"}`(注入不足/深化信号);turn 结束无跟进 → `{turn, followup:"none"}`。采纳率 = none / (none+工具跟进),是召回择优/降级开关的启动证据。
+- **采纳信号**:每个有注入的 turn 在 turn/end 打一行 `{turn, followup:"<工具名>"|"none", adopted:true|false}`。`followup` = turn 内 agent 调过的第一个 exomind 检索工具(绕开信号);`adopted` = 助手回答文本中出现了注入命中页的标题(正向采纳,子串代理:转述不含原标题会偏低估)。四档读法:none+adopted=纯采纳 / 工具+adopted=顺着注入深挖 / 工具+¬adopted=绕开重查 / none+¬adopted=可能被忽略——是召回择优/降级开关的启动证据。
 - **复活率**:召回埋点的 `revived` 字段 = 命中页与「本插件此前沉淀页」(`/ingest/recent` 中 origin=dsh-plugin 的 created/updated pages)的交集数。「上一场会话的沉淀成为下一场的召回」从此是可观测数字,不再是叙事。命中页集合进程内缓存(TTL 10 分钟),前台召回路径零额外网络等待。
 - **主动建议**:会话结束沉淀时顺带取一条 `/suggest-topics` 选题,以「ExoMind 建议下一步深挖: <主题> — <理由>」输出在 `exomind-capture` 日志,失败静默。agent 也可随时用 `exomind_suggest` 工具主动取。
 
@@ -117,6 +131,7 @@ dsh plugin --profile <你的profile> remove dsh-exomind
 - ✅ Phase 3:会话沉淀——`session/disposed` 质量门槛 + `/ingest/async` 幂等提交(v0.3.0)。
 - ✅ Phase 4:数据闭环——召回采纳信号(followup)+ 复活率(revived)+ 独立 recall 缺口通道 + 主动建议(exomind_suggest 与 dispose 日志行)(v0.5.0)。
 - ✅ Phase 5:Agent 主动沉淀——exomind_ingest 工具 + 召回头部引导 + 密钥清单可行动拒绝(v0.6.0)。
+- ✅ Phase 6:正向采纳信号——followup 埋点升级为 turn 级汇总(followup+adopted 四档)+ AGENTS.md 引导通道文档化(v0.7.0)。
 
 ## 开发
 
@@ -137,7 +152,7 @@ GitHub Actions 自动 npm publish(trusted publishing,无 token)。
 安装(npm 已发布后):
 
 ```bash
-dsh plugin --profile <你的profile> add dsh-exomind@0.6.0
+dsh plugin --profile <你的profile> add dsh-exomind@0.7.0
 ```
 
 ## License
