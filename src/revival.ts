@@ -1,7 +1,8 @@
 /** 复活率:召回命中的页里,有多少来自本插件此前的会话沉淀——
  *  「上一场会话的沉淀成为下一场的召回」从叙事变成可观测数字。
- *  数据源:GET /ingest/recent?feed=1 —— 每条带 source(来自 ingest 的 origin 字段)
- *  与 created/updated pages;origin=dsh-plugin 的页集合与召回命中 path 求交集。
+ *  数据源:GET /ingest/recent?feed=1 —— 每条带 channel(= ingest 请求 origin 的透传,
+ *  item.source 是展示名,别用)与 created/updated pages;channel=dsh-plugin 的页集合
+ *  与召回命中 path 求交集。
  *  硬约束:绝不在前台召回路径上等网络——peek() 只读缓存(未就绪返回 null,
  *  埋点省略 revived 字段),refresh() 单飞后台预热,TTL 过期沿用旧集直到换新。
  *  不落任何本地文件(守住 README 的零残留承诺),进程内缓存即全部状态。 */

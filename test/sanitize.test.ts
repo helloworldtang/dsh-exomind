@@ -8,20 +8,34 @@ import { sanitizeDigest } from "../src/sanitize.js";
 test("各 secret 形态命中打码,保留 4 字符前缀可辨认", () => {
   const content = [
     "OpenAI: sk-proj4AbCdEf0123456789ABCDEFG",
+    "ExoMind: sk_live_9f8e_7d6c_5b4a_3f2e_1d0c_9b8a",
     "AWS: AKIAIOSFODNN7EXAMPLE",
     "GitHub: ghp_16C7e42F292c6912E7710c838347Ae178B4a",
     "curl -H 'Authorization: Bearer Ya29.a0AfH6SMBxN0Kq'",
     "JWT: eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV",
   ].join("\n");
   const { content: out, masked, dropped } = sanitizeDigest(content, "普通标题");
-  assert.equal(masked, 5);
+  assert.equal(masked, 6);
   assert.equal(dropped, false);
   assert.match(out, /sk-p\*\*\*REDACTED\*\*\*/);
+  assert.match(out, /sk_l\*\*\*REDACTED\*\*\*/); // 自家 key 下划线形态(v0.4.0 漏网)
   assert.match(out, /AKIA\*\*\*REDACTED\*\*\*/);
   assert.match(out, /ghp_\*\*\*REDACTED\*\*\*/);
   assert.match(out, /Bearer \*\*\*REDACTED\*\*\*/);
   assert.match(out, /eyJh\*\*\*REDACTED\*\*\*/);
-  assert.doesNotMatch(out, /0123456789ABCDEFG|IOSFODNN7EXAMPLE|SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV/);
+  assert.doesNotMatch(
+    out,
+    /0123456789ABCDEFG|9f8e_7d6c|IOSFODNN7EXAMPLE|SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV/,
+  );
+});
+
+test("sk_live_ 短于 16 位尾串不误伤(形态门槛);普通下划线文本零命中", () => {
+  const { content, masked } = sanitizeDigest(
+    "字段 sk_live_config 与 task_status_snapshot 都是普通下划线词",
+    "t",
+  );
+  assert.equal(masked, 0);
+  assert.equal(content, "字段 sk_live_config 与 task_status_snapshot 都是普通下划线词");
 });
 
 test("PEM 私钥块整块替换(含多行)", () => {

@@ -34,6 +34,9 @@ const SECRET_PATTERNS: SecretPattern[] = [
   },
   // OpenAI / Anthropic / bigmodel 系 sk- 前缀 key
   { re: /\bsk-(?:ant-)?[A-Za-z0-9_-]{16,}\b/g, replace: mask },
+  // ExoMind 自家 API key(sk_live_/sk_test_ 下划线形态;v0.4.0 只写了 sk- 连字符,
+  // 一字之差漏掉了自家——用户把 key 贴进会话时会被明文上传,2026-11-20 社区反馈后补)
+  { re: /\bsk_(?:live|test)_[A-Za-z0-9_-]{16,}\b/g, replace: mask },
   // AWS Access Key ID
   { re: /\bAKIA[0-9A-Z]{16}\b/g, replace: mask },
   // GitHub token(classic gh?_ 与 fine-grained)
