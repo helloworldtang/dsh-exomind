@@ -331,9 +331,10 @@ export function registerExomindTools(ctx: Context, options: ToolOptions): () => 
         defineTool({
           name: "exomind_ingest",
           description:
-            "把本会话中值得长期保留的知识存入 ExoMind 知识飞轮:架构决策与理由、踩坑根因、" +
-            "经验总结、好的设计/想法。会话出现「这个值得记下来」的结论时**当场**调用," +
-            "不要等会话结束——内容应自包含(脱离本会话也能读懂),面向未来的检索场景。",
+            "把本会话中形成的**相对稳定**的知识存入 ExoMind 知识飞轮:经验、结论、方案、" +
+            "设计、洞察(含架构决策与理由、踩坑根因)。判据:信息已稳定,不再是中间态假设或" +
+            "待验证猜测。到达该节点时**无需用户指示,当场主动调用**,不要等会话结束——" +
+            "内容应自包含(脱离本会话也能读懂),面向未来的检索场景。",
           parameters: {
             content: {
               type: "string",

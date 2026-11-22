@@ -45,7 +45,7 @@ function toolByName(tools: ToolDef[], name: string): ToolDef {
   return tool;
 }
 
-test("注册三个工具;search 渲染标题与召回路", async () => {
+test("注册五个工具;search 渲染标题与召回路", async () => {
   const { ctx, tools } = fakeCtx();
   registerExomindTools(
     ctx as never,
