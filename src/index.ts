@@ -163,8 +163,10 @@ export function registerRecall(
 }
 
 /** Cordis 4 契约:apply 的返回值即 disposer(可为 promise,fiber 释放时等待)。
- *  沉淀管线的 drain 在 dispose 时有界等待在途提交(headless 退出窗口内完成秒回)。 */
-export function apply(ctx: Context, config: Config): () => Promise<void> {
+ *  沉淀管线的 drain 在 dispose 时有界等待在途提交(宿主卸载完可能立即 process.exit)。
+ *  必须写成箭头函数:Cordis 把带 .prototype 的回调(普通 function)当构造器,以 new 调用,
+ *  返回值被当成实例丢弃——drain 就永远不会执行(test/lifecycle.test.ts 守此契约)。 */
+export const apply = (ctx: Context, config: Config): (() => Promise<void>) => {
   const disposers: Array<() => void> = [];
   if (config.recallEnabled) {
     disposers.push(registerRecall(ctx, { ...config }));
@@ -179,4 +181,4 @@ export function apply(ctx: Context, config: Config): () => Promise<void> {
     for (const dispose of disposers.splice(0)) dispose();
     await drain();
   };
-}
+};

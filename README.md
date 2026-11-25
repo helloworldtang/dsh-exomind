@@ -19,7 +19,7 @@
 > 前置:DSH 0.2.1-rc.2+(preview 阶段 API 在变,本插件按 0.2.1-rc 与 0.2.2-rc 系列验证,`engines.dsh` 已声明,新版 DSH 安装器会做前置检查);Node 22+;已用 `exomind login` 登录过 ExoMind(见下"凭据")。
 
 ```bash
-dsh plugin --profile <你的profile> add github:helloworldtang/dsh-exomind#v0.7.3
+dsh plugin --profile <你的profile> add github:helloworldtang/dsh-exomind#v0.7.5
 dsh --profile <你的profile> --dump-config   # 应看到 id: exomind-flywheel 的 bundle 行
 # 重启该 profile 后生效
 ```
@@ -80,7 +80,7 @@ dsh --profile <你的profile> --dump-config   # 应看到 id: exomind-flywheel �
 
 - 提交带 `client_key` 幂等(内容哈希派生),重试/重投不产生重复;
 - 提交带 `origin: dsh-plugin`(v0.5.0+):服务端摄入流水以此区分来源,是复活率统计的过滤键;
-- 插件退出窗口内有界等待提交完成;提交失败只丢弃本条,不影响宿主;
+- 插件卸载时等待在途提交完成(上限 3 秒);提交失败只丢弃本条,不影响宿主;
 - 存档标签 `dsh` + `会话存档`,标题形如「DSH 会话:<任务>」。
 
 不想要自动沉淀:`captureEnabled: false`。
@@ -152,7 +152,7 @@ GitHub Actions 自动 npm publish(trusted publishing,无 token)。
 安装(npm 已发布后):
 
 ```bash
-dsh plugin --profile <你的profile> add dsh-exomind@0.7.3
+dsh plugin --profile <你的profile> add dsh-exomind@0.7.5
 ```
 
 ## License

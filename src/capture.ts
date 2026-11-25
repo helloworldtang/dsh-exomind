@@ -121,7 +121,9 @@ export function deriveClientKey(seed: string): string {
   return `dsh-${createHash("sha256").update(seed, "utf-8").digest("hex").slice(0, 44)}`;
 }
 
-const defaultSleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+/** unref:兜底等待只为「有在途提交」而设;没有在途请求时,这个定时器不得拖住事件循环
+ *  (否则宿主自然退出要多等到它到期)。 */
+const defaultSleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms).unref());
 
 /** 注册沉淀管线,返回 drain 函数:等待在途提交(有界),供插件 dispose 时调用。 */
 export function registerCapture(ctx: Context, options: CaptureOptions): () => Promise<void> {
