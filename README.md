@@ -16,7 +16,7 @@
 
 ## 安装
 
-> 前置:DSH 0.1.0-rc.6+(与 peer 范围一致;0.1.x 宿主不读 `engines.dsh`,0.2.1+ 宿主在安装与启动时按它校验)。实测通过:0.1.2-rc.1、0.1.5-rc.2、0.1.7-rc.2(headless)与 0.2.2-rc.5(桌面);preview 阶段 API 在变,上限 `<0.2.3`,DSH 0.2.3 正式版发布后需评估再放宽。Node 22+;已用 `exomind login` 登录过 ExoMind(见下"凭据")。
+> 前置:DSH 0.1.0-rc.6+(与 peer 范围一致;0.1.x 宿主不读 `engines.dsh`,0.2.1+ 宿主在安装与启动时按它校验)。实测通过:0.1.2-rc.1、0.1.5-rc.2、0.1.7-rc.2(headless)与 0.2.2-rc.5(桌面);preview 阶段 API 在变,上限 `<0.2.3`:0.2.3 的 alpha/rc 预发布仍算兼容(实测 0.2.3-alpha.2 可用),不带后缀的 0.2.3 与 0.2.4 起的版本会被拒,届时需评估再放宽。Node 22+;已用 `exomind login` 登录过 ExoMind(见下"凭据")。
 
 **桌面应用**(DeepSeek Harness Desktop):在应用的「插件」页安装与更新,也可以直接对 agent 说「安装 dsh-exomind@0.7.6」。
 
