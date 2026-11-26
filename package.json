@@ -21,8 +21,7 @@
     "test": "node --test --import tsx test/*.test.ts",
     "lint": "eslint .",
     "format": "prettier --write .",
-    "format:check": "prettier --check .",
-    "guard:headless": "node scripts/guard-bundles.mjs --profile headless"
+    "format:check": "prettier --check ."
   },
   "engines": {
     "node": ">=22",

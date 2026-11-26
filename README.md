@@ -18,13 +18,35 @@
 
 > 前置:DSH 0.1.0-rc.6+(与 peer 范围一致;0.1.x 宿主不读 `engines.dsh`,0.2.1+ 宿主在安装与启动时按它校验)。实测通过:0.1.2-rc.1、0.1.5-rc.2、0.1.7-rc.2(headless)与 0.2.2-rc.5(桌面);preview 阶段 API 在变,上限 `<0.2.3`,DSH 0.2.3 正式版发布后需评估再放宽。Node 22+;已用 `exomind login` 登录过 ExoMind(见下"凭据")。
 
+**桌面应用**(DeepSeek Harness Desktop):在应用的「插件」页安装与更新,也可以直接对 agent 说「安装 dsh-exomind@0.7.5」。
+
+**命令行**:
+
 ```bash
-dsh plugin --profile <你的profile> add github:helloworldtang/dsh-exomind#v0.7.5
+dsh plugin --profile <你的profile> add github:helloworldtang/dsh-exomind#v0.7.5   # GitHub tag
+dsh plugin --profile <你的profile> add dsh-exomind@0.7.5                          # 或 npm
 dsh --profile <你的profile> --dump-config   # 应看到 id: exomind-flywheel 的 bundle 行
 # 重启该 profile 后生效
 ```
 
 ⚠️ 引用请锁定 tag(`#vX.Y.Z`),不要引滚动分支——升级必须是显式改版本号的决策。
+
+升级:命令行重新执行 `add` 并指定新版本;桌面应用在插件页点更新。本插件刚发布的版本可能触发 pnpm 的发布龄护栏(pnpm 11 起默认 24 小时),DSH 会自动豁免;若 profile 开了严格模式,等发布满 24 小时再装。
+
+## 命令行与 profile
+
+除了桌面应用,DSH 也可以从命令行启动。两者共用 `~/.dsh` 下的会话、设置与凭据,但插件各装各的——桌面应用装的插件不会出现在命令行里,反之亦然。
+
+profile 是一份命名配置(`~/.dsh/profiles/<名字>`),决定把哪些插件组合成什么样的应用。内置模板:
+
+| profile       | 用途                                                                  | 命令                            |
+| ------------- | --------------------------------------------------------------------- | ------------------------------- |
+| `headless`    | 一次性任务:新建会话、跑完、打印答案、退出。适合脚本、定时任务、批处理 | `dsh --profile headless "任务"` |
+| `web`         | 本地网页界面,浏览器打开 `127.0.0.1:3080`                              | `dsh web`                       |
+| `acp` / `sdk` | 给编辑器或程序调用(stdio 协议)                                        | `dsh --profile acp` 等          |
+| `desktop`     | 桌面应用专用,命令行不接管                                             | —                               |
+
+管理某个 profile 的插件用 `dsh plugin --profile <p> add|remove <包>`;看它实际会启动什么用 `dsh --profile <p> --dump-config`。
 
 ## 凭据
 
@@ -122,6 +144,8 @@ exomind_ingest 存入知识飞轮,不要等会话结束;内容自包含,勿含�
 dsh plugin --profile <你的profile> remove dsh-exomind
 ```
 
+桌面应用在插件页卸载。
+
 本插件不在本地存任何数据(凭据复用 exomind-cli 的文件),无残留。
 
 ## 路线图
@@ -132,28 +156,30 @@ dsh plugin --profile <你的profile> remove dsh-exomind
 - ✅ Phase 4:数据闭环——召回采纳信号(followup)+ 复活率(revived)+ 独立 recall 缺口通道 + 主动建议(exomind_suggest 与 dispose 日志行)(v0.5.0)。
 - ✅ Phase 5:Agent 主动沉淀——exomind_ingest 工具 + 召回头部引导 + 密钥清单可行动拒绝(v0.6.0)。
 - ✅ Phase 6:正向采纳信号——followup 埋点升级为 turn 级汇总(followup+adopted 四档)+ AGENTS.md 引导通道文档化(v0.7.0)。
+- ✅ Phase 7:卸载契约修复——`apply` 返回的 disposer 被 Cordis 丢弃,中断退出时在途的会话沉淀会丢失;改箭头函数 + 兜底定时器 `unref`,补真 Cordis 回归测试(v0.7.5)。
 
 ## 开发
 
 ```bash
 npm install
 npm run typecheck && npm run build && npm test && npm run lint
-# 本地装进 DSH 试:dsh plugin --profile <profile> add /absolute/path/to/dsh-exomind
 ```
 
-> ⚠️ 开发坑:`dsh plugin add` 每次都会把宿主发现的其他 app bundle(acp/sdk/web 等)
-> 塞进 profile 的 `dsh.profile.bundles`,多 app 争参会让 headless 报
-> "too many arguments"。装完跑 `npm run guard:headless` 修剪(其他 profile 用
-> `node scripts/guard-bundles.mjs --profile <p> --app @deepseek-ai/dsh-<p>`)。
-
-发版:bump `package.json` 版本 → 质量门全绿 → commit → `git tag v*` → push tag,
-GitHub Actions 自动 npm publish(trusted publishing,无 token)。
-
-安装(npm 已发布后):
+**验证一个本地构建**(不落任何 profile):`npm run build && npm pack`,解包后写一个覆盖层——停用已装的 `exomind-flywheel` 条目,再 `insert` 一条 `name` 为 `file:///…/dist/index.js` 的新条目——用 `--patch` 挂进任意 profile,只对本次启动生效:
 
 ```bash
-dsh plugin --profile <你的profile> add dsh-exomind@0.7.5
+dsh --profile <profile> --patch /path/to/overlay.yml "一句话任务"
 ```
+
+**装进 profile**:`dsh plugin --profile <p> add <包名@版本或路径>`。DSH ≥ 0.2.1 的 CLI 安装前做兼容性预检,失败时回滚清单与锁文件,且只把本次新增的依赖并入 bundles;≤ 0.1.5 的 CLI 会把无关 bundle 一并写入 profile,请先升级 CLI。维护者备注:
+
+- 预览会装什么,用 `pnpm view dsh-exomind@<版本> version engines peerDependencies --json`;`pnpm add --lockfile-only` 不是 dry-run,它会改 `package.json` 与锁文件。
+- pnpm 11 起默认 24 小时发布龄护栏:当天发当天装,pnpm 会把该版本自动写进 profile 的 `pnpm-workspace.yaml`;把豁免写成包名 `dsh-exomind` 可一次到位。
+- 真实 DSH 端到端优先用隔离的临时 `DSH_HOME`,不碰本机 `~/.dsh`。
+- 全局 CLI 按官方方式用 npm/npx 安装。本机实测 pnpm 11.22 全局安装的 0.2.2-rc.5 启动即报 `No usable native binding found for node-addon-require-builtin-darwin-arm64`(软链布局下加载器的原生依赖解析不到),改用 `npm install -g` 后正常。
+
+发版:bump `package.json` 版本(README 安装示例与 `package-lock.json` 一并同步)→ 质量门全绿 → commit → `git tag v*`(带注解)→ push tag,
+GitHub Actions 自动 npm publish(trusted publishing,无 token)→ 建 GitHub Release(变更 / 为什么 / 升级命令 / 消费方指引)→ 复核 npm 可见与 Release 页可达。
 
 ## License
 
