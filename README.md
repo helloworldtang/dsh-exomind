@@ -18,13 +18,13 @@
 
 > 前置:DSH 0.1.0-rc.6+(与 peer 范围一致;0.1.x 宿主不读 `engines.dsh`,0.2.1+ 宿主在安装与启动时按它校验)。实测通过:0.1.2-rc.1、0.1.5-rc.2、0.1.7-rc.2(headless)与 0.2.2-rc.5(桌面);preview 阶段 API 在变,上限 `<0.2.3`,DSH 0.2.3 正式版发布后需评估再放宽。Node 22+;已用 `exomind login` 登录过 ExoMind(见下"凭据")。
 
-**桌面应用**(DeepSeek Harness Desktop):在应用的「插件」页安装与更新,也可以直接对 agent 说「安装 dsh-exomind@0.7.5」。
+**桌面应用**(DeepSeek Harness Desktop):在应用的「插件」页安装与更新,也可以直接对 agent 说「安装 dsh-exomind@0.7.6」。
 
 **命令行**:
 
 ```bash
-dsh plugin --profile <你的profile> add github:helloworldtang/dsh-exomind#v0.7.5   # GitHub tag
-dsh plugin --profile <你的profile> add dsh-exomind@0.7.5                          # 或 npm
+dsh plugin --profile <你的profile> add github:helloworldtang/dsh-exomind#v0.7.6   # GitHub tag
+dsh plugin --profile <你的profile> add dsh-exomind@0.7.6                          # 或 npm
 dsh --profile <你的profile> --dump-config   # 应看到 id: exomind-flywheel 的 bundle 行
 # 重启该 profile 后生效
 ```
